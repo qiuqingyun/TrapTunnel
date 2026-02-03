@@ -5,28 +5,41 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
+	"os/signal"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/net/ipv4"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 type Config struct {
 	NodeID            uint16
-	BServerIP         string
-	BServerPort       string
+	Servers           []string // 支持多服务器: "ip:port"
 	ListenPort        int
 	ReconnectInterval int
 	MaxBufferSize     int
+	// Logging config
+	LogFile       string
+	MaxLogSize    int // MB
+	MaxLogBackups int
 }
 
 var (
-	cfg     Config
-	seqChan chan PacketData
-	counter uint32
+	cfg         Config
+	cfgLock     sync.RWMutex
+	seqChan     chan PacketData
+	counter     uint32
+	currentConn net.Conn
+	connLock    sync.Mutex
+	lastModTime time.Time
+	logOutput   io.Writer
 )
 
 type PacketData struct {
@@ -34,13 +47,59 @@ type PacketData struct {
 	Packet []byte
 }
 
-// 简易 INI 解析器，避免引入第三方包
-func loadConfig(path string) {
+func setupLogger(newCfg Config) {
+	if newCfg.LogFile == "" {
+		// If no log file specified, use stdout
+		log.SetOutput(os.Stdout)
+		return
+	}
+
+	l := &lumberjack.Logger{
+		Filename:   newCfg.LogFile,
+		MaxSize:    newCfg.MaxLogSize, // megabytes
+		MaxBackups: newCfg.MaxLogBackups,
+		MaxAge:     28,   // days
+		Compress:   true, // disabled by default
+	}
+
+	// Write to both stdout and file
+	// 注意：如果热更新时频繁调用，这里可能会导致旧的 writer 没有正确关闭？
+	// log.SetOutput 接受 io.Writer，lumberjack 实现了 Write。
+	// 每次调用 SetOutput 会替换 logger 的 output。
+	// lumberjack.Logger 实际上在 Write 时打开文件，Rotate 时关闭并重新打开。
+	// 如果 Filename 改变了，创建一个新的 lumberjack.Logger 是对的。
+	logOutput = io.MultiWriter(os.Stdout, l)
+	log.SetOutput(logOutput)
+}
+
+// 简易 INI 解析器
+func loadConfig(path string, firstRun bool) {
 	file, err := os.Open(path)
 	if err != nil {
-		log.Fatalf("[!] 无法读取配置文件: %v", err)
+		log.Printf("[!] 无法读取配置文件: %v", err)
+		return
 	}
 	defer file.Close()
+
+	// 临时配置对象，避免读取一半被使用
+	var newCfg Config
+	// 设置默认值或继承旧值
+	if !firstRun {
+		cfgLock.RLock()
+		newCfg = cfg
+		cfgLock.RUnlock()
+		// 清空 Servers 以便重新加载
+		newCfg.Servers = []string{}
+	} else {
+		// 默认值
+		newCfg.ReconnectInterval = 5
+		newCfg.MaxBufferSize = 2000
+		newCfg.MaxLogSize = 10
+		newCfg.MaxLogBackups = 100
+	}
+
+	// 临时变量兼容旧配置
+	var bServerIP, bServerPort string
 
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
@@ -54,30 +113,89 @@ func loadConfig(path string) {
 			val := strings.TrimSpace(parts[1])
 			switch key {
 			case "node_id":
-				fmt.Sscanf(val, "%d", &cfg.NodeID)
+				fmt.Sscanf(val, "%d", &newCfg.NodeID)
+			case "servers":
+				servers := strings.Split(val, ",")
+				for _, s := range servers {
+					s = strings.TrimSpace(s)
+					if s != "" {
+						newCfg.Servers = append(newCfg.Servers, s)
+					}
+				}
 			case "b_server_ip":
-				cfg.BServerIP = val
+				bServerIP = val
 			case "b_server_port":
-				cfg.BServerPort = val
+				bServerPort = val
 			case "listen_port":
-				fmt.Sscanf(val, "%d", &cfg.ListenPort)
+				fmt.Sscanf(val, "%d", &newCfg.ListenPort)
 			case "reconnect_interval":
-				fmt.Sscanf(val, "%d", &cfg.ReconnectInterval)
+				fmt.Sscanf(val, "%d", &newCfg.ReconnectInterval)
 			case "max_buffer_size":
-				fmt.Sscanf(val, "%d", &cfg.MaxBufferSize)
+				if firstRun {
+					fmt.Sscanf(val, "%d", &newCfg.MaxBufferSize)
+				}
+			case "log_file":
+				newCfg.LogFile = val
+			case "max_log_size":
+				fmt.Sscanf(val, "%d", &newCfg.MaxLogSize)
+			case "max_log_backups":
+				fmt.Sscanf(val, "%d", &newCfg.MaxLogBackups)
 			}
 		}
 	}
-	seqChan = make(chan PacketData, cfg.MaxBufferSize)
+
+	// 兼容旧配置格式
+	if len(newCfg.Servers) == 0 && bServerIP != "" && bServerPort != "" {
+		newCfg.Servers = append(newCfg.Servers, net.JoinHostPort(bServerIP, bServerPort))
+	}
+
+	// 检查是否需要更新 Logger
+	// 仅在首次运行或日志配置变更时更新
+	if firstRun || newCfg.LogFile != cfg.LogFile || newCfg.MaxLogSize != cfg.MaxLogSize || newCfg.MaxLogBackups != cfg.MaxLogBackups {
+		setupLogger(newCfg)
+	}
+
+	// 更新全局配置
+	cfgLock.Lock()
+	cfg = newCfg
+	// lastModTime 已经不再使用了，因为我们改用信号触发
+	cfgLock.Unlock()
+
+	// 如果不是首次运行，且发生了配置变更，强制断开连接以触发重连
+	if !firstRun {
+		log.Println("[*] 配置已热重载")
+		connLock.Lock()
+		if currentConn != nil {
+			currentConn.Close()
+			currentConn = nil
+		}
+		connLock.Unlock()
+	} else {
+		seqChan = make(chan PacketData, cfg.MaxBufferSize)
+	}
+}
+
+func signalWatcher(path string) {
+	sigChan := make(chan os.Signal, 1)
+	// 监听 SIGHUP 信号 (Linux下重载配置的标准信号)
+	signal.Notify(sigChan, syscall.SIGHUP)
+
+	for range sigChan {
+		log.Println("[*] 收到 SIGHUP 信号，正在重载配置...")
+		loadConfig(path, false)
+	}
 }
 
 func main() {
 	configPath := flag.String("c", "sender.conf", "Path to config file")
 	flag.Parse()
 
-	loadConfig(*configPath)
-	log.Printf("[*] OriginTrap Sender 启动 | NodeID: %d | Target: %s:%s", cfg.NodeID, cfg.BServerIP, cfg.BServerPort)
+	loadConfig(*configPath, true)
+	cfgLock.RLock()
+	log.Printf("[*] OriginTrap Sender 启动 | NodeID: %d | Targets: %v", cfg.NodeID, cfg.Servers)
+	cfgLock.RUnlock()
 
+	go signalWatcher(*configPath)
 	go packetProducer()
 	tunnelConsumer()
 }
@@ -101,7 +219,12 @@ func packetProducer() {
 
 		if len(payload) >= 4 {
 			dstPort := binary.BigEndian.Uint16(payload[2:4])
-			if dstPort == uint16(cfg.ListenPort) {
+			// 获取当前监听端口
+			cfgLock.RLock()
+			listenPort := cfg.ListenPort
+			cfgLock.RUnlock()
+
+			if dstPort == uint16(listenPort) {
 				fullPacket, _ := h.Marshal()
 				fullPacket = append(fullPacket, payload...)
 				counter++
@@ -115,24 +238,70 @@ func packetProducer() {
 }
 
 func tunnelConsumer() {
-	addr := net.JoinHostPort(cfg.BServerIP, cfg.BServerPort)
 	for {
-		conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
-		if err != nil {
-			time.Sleep(time.Duration(cfg.ReconnectInterval) * time.Second)
+		// 获取服务器列表
+		cfgLock.RLock()
+		servers := cfg.Servers
+		reconnectInterval := cfg.ReconnectInterval
+		cfgLock.RUnlock()
+
+		if len(servers) == 0 {
+			log.Println("[!] 未配置目标服务器，等待配置更新...")
+			time.Sleep(time.Duration(reconnectInterval) * time.Second)
 			continue
 		}
-		log.Printf("[✓] 隧道已建立")
+
+		// 尝试连接列表中的服务器
+		var conn net.Conn
+		var err error
+		
+		for _, addr := range servers {
+			conn, err = net.DialTimeout("tcp", addr, 5*time.Second)
+			if err == nil {
+				log.Printf("[✓] 连接成功: %s", addr)
+				break
+			}
+			log.Printf("[!] 连接失败 %s: %v", addr, err)
+		}
+
+		if conn == nil {
+			time.Sleep(time.Duration(reconnectInterval) * time.Second)
+			continue
+		}
+
+		// 保存连接引用以便热更新时关闭
+		connLock.Lock()
+		currentConn = conn
+		connLock.Unlock()
+
+		// 数据发送循环
 		for data := range seqChan {
 			totalLen := uint32(6 + len(data.Packet))
 			head := make([]byte, 10)
+			
+			// 获取当前 NodeID (允许热更新)
+			cfgLock.RLock()
+			nodeID := cfg.NodeID
+			cfgLock.RUnlock()
+
 			binary.BigEndian.PutUint32(head[0:4], totalLen)
-			binary.BigEndian.PutUint16(head[4:6], cfg.NodeID)
+			binary.BigEndian.PutUint16(head[4:6], nodeID)
 			binary.BigEndian.PutUint32(head[6:10], data.Seq)
+			
+			// 设置写超时，防止网络断开时阻塞过久
+			conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 			if _, err := conn.Write(append(head, data.Packet...)); err != nil {
+				log.Printf("[!] 发送错误: %v", err)
 				break
 			}
 		}
+
+		connLock.Lock()
+		if currentConn == conn {
+			currentConn = nil
+		}
+		connLock.Unlock()
 		conn.Close()
+		log.Println("[-] 连接断开，准备重连...")
 	}
 }
