@@ -6,7 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
@@ -31,6 +31,7 @@ type Config struct {
 	// LogFile 已移除，使用默认路径
 	MaxLogSize    int // MB
 	MaxLogBackups int
+	LogLevel      string
 }
 
 var (
@@ -60,13 +61,17 @@ func getDefaultLogPath() string {
 func setupLogger(newCfg Config) {
 	logPath := getDefaultLogPath()
 	
-	// 确保存储日志的目录存在 (仅针对 Linux 路径 /var/log/traptunnel)
+	// 确保存储日志的目录存在 (仅针对 Linux /var/log/traptunnel)
 	if runtime.GOOS != "windows" {
 		dir := filepath.Dir(logPath)
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			// 如果无法创建目录 (例如无权限)，回退到 stdout 并打印错误
-			log.SetOutput(os.Stdout)
-			log.Printf("[!] 无法创建日志目录 %s: %v. 将仅输出到控制台。", dir, err)
+			// 使用 fmt 而不是 log，因为 log 尚未配置
+			fmt.Printf("[!] 无法创建日志目录 %s: %v. 将仅输出到控制台。\n", dir, err)
+			// 配置一个仅输出到 stdout 的 logger
+			opts := &slog.HandlerOptions{Level: parseLogLevel(newCfg.LogLevel)}
+			logger := slog.New(slog.NewTextHandler(os.Stdout, opts))
+			slog.SetDefault(logger)
 			return
 		}
 	}
@@ -81,14 +86,52 @@ func setupLogger(newCfg Config) {
 
 	// Write to both stdout (for systemd) and file (for persistence/rotation)
 	logOutput = io.MultiWriter(os.Stdout, l)
-	log.SetOutput(logOutput)
+	
+	// 配置 slog
+	var level slog.Level
+	switch strings.ToUpper(newCfg.LogLevel) {
+	case "DEBUG":
+		level = slog.LevelDebug
+	case "WARN":
+		level = slog.LevelWarn
+	case "ERROR":
+		level = slog.LevelError
+	default:
+		level = slog.LevelInfo
+	}
+
+	opts := &slog.HandlerOptions{
+		Level: level,
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.TimeKey {
+				// 自定义时间格式
+				return slog.Attr{Key: "time", Value: slog.StringValue(a.Value.Time().Format(time.RFC3339))}
+			}
+			return a
+		},
+	}
+	logger := slog.New(slog.NewTextHandler(logOutput, opts))
+	slog.SetDefault(logger)
+}
+
+func parseLogLevel(s string) slog.Level {
+	switch strings.ToUpper(s) {
+	case "DEBUG":
+		return slog.LevelDebug
+	case "WARN":
+		return slog.LevelWarn
+	case "ERROR":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
 }
 
 // 简易 INI 解析器
 func loadConfig(path string, firstRun bool) {
 	file, err := os.Open(path)
 	if err != nil {
-		log.Printf("[!] 无法读取配置文件: %v", err)
+		slog.Error("无法读取配置文件", "error", err)
 		return
 	}
 	defer file.Close()
@@ -108,6 +151,7 @@ func loadConfig(path string, firstRun bool) {
 		newCfg.MaxBufferSize = 2000
 		newCfg.MaxLogSize = 10
 		newCfg.MaxLogBackups = 100
+		newCfg.LogLevel = "INFO"
 	}
 
 	// 临时变量兼容旧配置
@@ -173,7 +217,7 @@ func loadConfig(path string, firstRun bool) {
 
 	// 如果不是首次运行，且发生了配置变更，强制断开连接以触发重连
 	if !firstRun {
-		log.Println("[*] 配置已热重载")
+		slog.Info("配置已热重载", "component", "sender", "event", "ConfigReload")
 		connLock.Lock()
 		if currentConn != nil {
 			currentConn.Close()
@@ -191,7 +235,7 @@ func signalWatcher(path string) {
 	signal.Notify(sigChan, syscall.SIGHUP)
 
 	for range sigChan {
-		log.Println("[*] 收到 SIGHUP 信号，正在重载配置...")
+		slog.Info("收到 SIGHUP 信号，正在重载配置...", "component", "sender", "event", "ConfigReload")
 		loadConfig(path, false)
 	}
 }
@@ -202,7 +246,13 @@ func main() {
 
 	loadConfig(*configPath, true)
 	cfgLock.RLock()
-	log.Printf("[*] OriginTrap Sender 启动 | NodeID: %d | Targets: %v", cfg.NodeID, cfg.Servers)
+	slog.Info("OriginTrap Sender 启动", 
+		"component", "sender", 
+		"event", "Startup", 
+		"node_id", cfg.NodeID, 
+		"targets", cfg.Servers,
+		"log_level", cfg.LogLevel,
+	)
 	cfgLock.RUnlock()
 
 	go signalWatcher(*configPath)
@@ -213,11 +263,13 @@ func main() {
 func packetProducer() {
 	c, err := net.ListenPacket("ip4:udp", "0.0.0.0")
 	if err != nil {
-		log.Fatalf("[!] Socket 错误 (需root): %v", err)
+		slog.Error("Socket 错误 (需root)", "component", "sender", "event", "StartupFailed", "error", err)
+		os.Exit(1)
 	}
 	r, err := ipv4.NewRawConn(c)
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("RawConn error", "error", err)
+		os.Exit(1)
 	}
 
 	for {
@@ -235,12 +287,23 @@ func packetProducer() {
 			cfgLock.RUnlock()
 
 			if dstPort == uint16(listenPort) {
+				// 记录获取到的 Trap 数据 (DEBUG 级别)
+				slog.Debug("捕获到 Trap 包", 
+					"component", "sender", 
+					"event", "PacketCaptured", 
+					"src_ip", h.Src.String(), 
+					"dst_port", dstPort, 
+					"length", len(payload),
+					"seq", counter+1,
+				)
+
 				fullPacket, _ := h.Marshal()
 				fullPacket = append(fullPacket, payload...)
 				counter++
 				select {
 				case seqChan <- PacketData{Seq: counter, Packet: fullPacket}:
 				default:
+					slog.Warn("缓冲区已满，丢弃数据包", "component", "sender", "event", "BufferOverflow", "seq", counter)
 				}
 			}
 		}
@@ -256,7 +319,7 @@ func tunnelConsumer() {
 		cfgLock.RUnlock()
 
 		if len(servers) == 0 {
-			log.Println("[!] 未配置目标服务器，等待配置更新...")
+			slog.Warn("未配置目标服务器，等待配置更新...", "component", "sender", "event", "NoTarget")
 			time.Sleep(time.Duration(reconnectInterval) * time.Second)
 			continue
 		}
@@ -266,12 +329,13 @@ func tunnelConsumer() {
 		var err error
 		
 		for _, addr := range servers {
+			slog.Info("尝试连接服务器", "component", "sender", "event", "ConnAttempt", "target", addr)
 			conn, err = net.DialTimeout("tcp", addr, 5*time.Second)
 			if err == nil {
-				log.Printf("[✓] 连接成功: %s", addr)
+				slog.Info("连接成功", "component", "sender", "event", "ConnEstablished", "target", addr)
 				break
 			}
-			log.Printf("[!] 连接失败 %s: %v", addr, err)
+			slog.Error("连接失败", "component", "sender", "event", "ConnFailed", "target", addr, "error", err)
 		}
 
 		if conn == nil {
@@ -301,9 +365,10 @@ func tunnelConsumer() {
 			// 设置写超时，防止网络断开时阻塞过久
 			conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 			if _, err := conn.Write(append(head, data.Packet...)); err != nil {
-				log.Printf("[!] 发送错误: %v", err)
+				slog.Error("发送错误", "component", "sender", "event", "SendError", "error", err, "seq", data.Seq)
 				break
 			}
+			slog.Debug("消息发送成功", "component", "sender", "event", "MsgSent", "seq", data.Seq, "size", totalLen)
 		}
 
 		connLock.Lock()
@@ -312,6 +377,6 @@ func tunnelConsumer() {
 		}
 		connLock.Unlock()
 		conn.Close()
-		log.Println("[-] 连接断开，准备重连...")
+		slog.Warn("连接断开，准备重连...", "component", "sender", "event", "ConnLost")
 	}
 }

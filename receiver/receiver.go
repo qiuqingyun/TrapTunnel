@@ -6,7 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"golang.org/x/net/ipv4"
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -28,6 +29,7 @@ type Config struct {
 	// Logging
 	MaxLogSize    int
 	MaxLogBackups int
+	LogLevel      string
 }
 
 var (
@@ -53,8 +55,10 @@ func setupLogger(newCfg Config) {
 	if runtime.GOOS != "windows" {
 		dir := filepath.Dir(logPath)
 		if err := os.MkdirAll(dir, 0755); err != nil {
-			log.SetOutput(os.Stdout)
-			log.Printf("[!] 无法创建日志目录 %s: %v. 将仅输出到控制台。", dir, err)
+			fmt.Printf("[!] 无法创建日志目录 %s: %v. 将仅输出到控制台。\n", dir, err)
+			opts := &slog.HandlerOptions{Level: parseLogLevel(newCfg.LogLevel)}
+			logger := slog.New(slog.NewTextHandler(os.Stdout, opts))
+			slog.SetDefault(logger)
 			return
 		}
 	}
@@ -69,14 +73,51 @@ func setupLogger(newCfg Config) {
 
 	// MultiWriter: Stdout (for systemd) + File (for rotation)
 	logOutput = io.MultiWriter(os.Stdout, l)
-	log.SetOutput(logOutput)
+	
+	// 配置 slog
+	var level slog.Level
+	switch strings.ToUpper(newCfg.LogLevel) {
+	case "DEBUG":
+		level = slog.LevelDebug
+	case "WARN":
+		level = slog.LevelWarn
+	case "ERROR":
+		level = slog.LevelError
+	default:
+		level = slog.LevelInfo
+	}
+
+	opts := &slog.HandlerOptions{
+		Level: level,
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.TimeKey {
+				return slog.Attr{Key: "time", Value: slog.StringValue(a.Value.Time().Format(time.RFC3339))}
+			}
+			return a
+		},
+	}
+	logger := slog.New(slog.NewTextHandler(logOutput, opts))
+	slog.SetDefault(logger)
+}
+
+func parseLogLevel(s string) slog.Level {
+	switch strings.ToUpper(s) {
+	case "DEBUG":
+		return slog.LevelDebug
+	case "WARN":
+		return slog.LevelWarn
+	case "ERROR":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
 }
 
 // 简易 INI 解析
 func loadConfig(path string, firstRun bool) {
 	file, err := os.Open(path)
 	if err != nil {
-		log.Printf("[!] 配置文件读取失败: %v", err)
+		slog.Error("配置文件读取失败", "error", err)
 		return
 	}
 	defer file.Close()
@@ -88,6 +129,7 @@ func loadConfig(path string, firstRun bool) {
 		NodeMapping:   make(map[uint16]string),
 		MaxLogSize:    10,
 		MaxLogBackups: 100,
+		LogLevel:      "INFO",
 	}
 	
 	// 如果不是首次运行，保留旧的 NodeMapping，稍后覆盖
@@ -154,7 +196,7 @@ func loadConfig(path string, firstRun bool) {
 	cfg = newCfg
 	cfgLock.Unlock()
 	
-	log.Println("[-] 配置已加载/更新")
+	slog.Info("配置已加载/更新", "component", "receiver", "event", "ConfigReload")
 }
 
 func getNodeName(id uint16) string {
@@ -219,7 +261,9 @@ func patchAndInject(raw []byte, rawConn *ipv4.RawConn) {
 
 	// 4. 写入 Raw Socket
 	if err := rawConn.WriteTo(header, append(udpHeader, pdu...), nil); err != nil {
-		log.Printf("[错误] 注入失败: %v", err)
+		slog.Error("注入失败", "component", "receiver", "event", "InjectFailed", "error", err)
+	} else {
+		slog.Debug("数据包注入成功", "component", "receiver", "event", "PacketInjected", "len", len(raw))
 	}
 }
 
@@ -229,6 +273,9 @@ func handleNode(conn net.Conn, rawConn *ipv4.RawConn) {
 	tmp := make([]byte, 8192)
 	var nodeID uint16
 	firstPacket := true
+	
+	connID := conn.RemoteAddr().String()
+	slog.Info("客户端已连接", "component", "receiver", "event", "ClientConnected", "client_ip", connID)
 
 	for {
 		n, err := conn.Read(tmp)
@@ -249,7 +296,7 @@ func handleNode(conn net.Conn, rawConn *ipv4.RawConn) {
 			seq := binary.BigEndian.Uint32(header[2:6])
 			
 			if firstPacket {
-				log.Printf("[+] 节点连接: %s", getNodeName(nodeID))
+				slog.Info("节点身份识别成功", "component", "receiver", "event", "NodeIdentified", "node_id", nodeID, "node_name", getNodeName(nodeID), "conn_id", connID)
 				firstPacket = false
 			}
 
@@ -257,17 +304,18 @@ func handleNode(conn net.Conn, rawConn *ipv4.RawConn) {
 			trackerLock.Lock()
 			if lastSeq, ok := nodeTracker[nodeID]; ok {
 				if seq != (lastSeq + 1) {
-					log.Printf("[丢包] 节点:%s | 预期:%d | 收到:%d", getNodeName(nodeID), lastSeq+1, seq)
+					slog.Warn("检测到丢包", "component", "receiver", "event", "PacketLoss", "node_id", nodeID, "expected", lastSeq+1, "received", seq)
 				}
 			}
 			nodeTracker[nodeID] = seq
 			trackerLock.Unlock()
 
+			slog.Debug("收到数据包", "component", "receiver", "event", "MsgReceived", "node_id", nodeID, "seq", seq, "size", totalLen)
 			patchAndInject(packet, rawConn)
 			buffer = buffer[4+totalLen:]
 		}
 	}
-	log.Printf("[-] 节点断开: %s", getNodeName(nodeID))
+	slog.Info("节点断开连接", "component", "receiver", "event", "ClientClosed", "node_id", nodeID, "node_name", getNodeName(nodeID), "conn_id", connID)
 }
 
 func setupSignalHandler(configPath string) {
@@ -277,7 +325,7 @@ func setupSignalHandler(configPath string) {
 
 	go func() {
 		for range c {
-			log.Println("Received SIGHUP, reloading config...")
+			slog.Info("收到 SIGHUP, 正在重载配置...", "component", "receiver", "event", "ConfigReload")
 			loadConfig(configPath, false)
 		}
 	}()
@@ -296,7 +344,8 @@ func main() {
 	// 初始化注入 Socket
 	packetConn, err := net.ListenPacket("ip4:raw", "0.0.0.0")
 	if err != nil {
-		log.Fatalf("[!] 需 root 权限: %v", err)
+		slog.Error("Raw Socket 创建失败 (需 root 权限)", "error", err)
+		os.Exit(1)
 	}
 	rawConn, _ := ipv4.NewRawConn(packetConn)
 
@@ -308,9 +357,10 @@ func main() {
 	
 	l, err := net.Listen("tcp", ":"+port)
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("TCP 监听失败", "error", err)
+		os.Exit(1)
 	}
-	log.Printf("[*] OriginTrap Receiver (Go) 启动 | 端口: %s", port)
+	slog.Info("OriginTrap Receiver 启动", "component", "receiver", "event", "Startup", "port", port, "log_level", cfg.LogLevel)
 
 	for {
 		conn, err := l.Accept()
