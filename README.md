@@ -72,7 +72,7 @@ reconnect_interval = 5      # 重连等待时间 (秒)
 max_buffer_size = 2000      # 内部通道缓冲区大小
 
 [logging]
-log_file = sender.log       # 日志文件路径
+# 日志文件路径已使用系统默认值 (Linux: /var/log/traptunnel/sender.log)
 max_log_size = 10           # 单个日志文件最大大小 (MB)
 max_log_backups = 100       # 保留的旧日志文件最大数量
 ```
@@ -85,11 +85,13 @@ listen_port = 10000         # 监听 Sender 连接的 TCP 端口
 inject_ip = 127.0.0.1       # 注入数据包的新目的 IP
 
 [logging]
-log_file = origin_trap_receiver.log # 日志文件路径
+# 日志文件路径已使用系统默认值 (Linux: /var/log/traptunnel/receiver.log)
+max_log_size = 10
+max_log_backups = 100
 
 [nodes]
 1 = HSH                       # NodeID 1 对应的名称，日志中将显示 HSH(1)
-2 = HY                        # NodeID 2 对应的名称
+2 = HF                        # NodeID 2 对应的名称
 ```
 
 ## 使用方法
@@ -99,12 +101,14 @@ log_file = origin_trap_receiver.log # 日志文件路径
 ```bash
 sudo ./receiver -c receiver.conf
 ```
+*注意：在 Linux 下运行时，默认日志路径为 `/var/log/traptunnel/receiver.log`。请确保运行用户有权创建该目录或目录已存在。*
 
 ### 2. 启动 Sender
 在边缘节点上运行（必须作为 root 运行）：
 ```bash
 sudo ./sender -c sender.conf
 ```
+*注意：在 Linux 下运行时，默认日志路径为 `/var/log/traptunnel/sender.log`。*
 
 ### 3. 配置热重载 (Sender 和 Receiver)
 Sender 和 Receiver 都支持在不重启进程的情况下更新配置。

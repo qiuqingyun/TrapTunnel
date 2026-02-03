@@ -10,6 +10,8 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -26,7 +28,7 @@ type Config struct {
 	ReconnectInterval int
 	MaxBufferSize     int
 	// Logging config
-	LogFile       string
+	// LogFile 已移除，使用默认路径
 	MaxLogSize    int // MB
 	MaxLogBackups int
 }
@@ -47,27 +49,37 @@ type PacketData struct {
 	Packet []byte
 }
 
+func getDefaultLogPath() string {
+	if runtime.GOOS == "windows" {
+		return "sender.log"
+	}
+	// Linux / Unix
+	return "/var/log/traptunnel/sender.log"
+}
+
 func setupLogger(newCfg Config) {
-	if newCfg.LogFile == "" {
-		// If no log file specified, use stdout
-		log.SetOutput(os.Stdout)
-		return
+	logPath := getDefaultLogPath()
+	
+	// 确保存储日志的目录存在 (仅针对 Linux 路径 /var/log/traptunnel)
+	if runtime.GOOS != "windows" {
+		dir := filepath.Dir(logPath)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			// 如果无法创建目录 (例如无权限)，回退到 stdout 并打印错误
+			log.SetOutput(os.Stdout)
+			log.Printf("[!] 无法创建日志目录 %s: %v. 将仅输出到控制台。", dir, err)
+			return
+		}
 	}
 
 	l := &lumberjack.Logger{
-		Filename:   newCfg.LogFile,
+		Filename:   logPath,
 		MaxSize:    newCfg.MaxLogSize, // megabytes
 		MaxBackups: newCfg.MaxLogBackups,
 		MaxAge:     28,   // days
 		Compress:   true, // disabled by default
 	}
 
-	// Write to both stdout and file
-	// 注意：如果热更新时频繁调用，这里可能会导致旧的 writer 没有正确关闭？
-	// log.SetOutput 接受 io.Writer，lumberjack 实现了 Write。
-	// 每次调用 SetOutput 会替换 logger 的 output。
-	// lumberjack.Logger 实际上在 Write 时打开文件，Rotate 时关闭并重新打开。
-	// 如果 Filename 改变了，创建一个新的 lumberjack.Logger 是对的。
+	// Write to both stdout (for systemd) and file (for persistence/rotation)
 	logOutput = io.MultiWriter(os.Stdout, l)
 	log.SetOutput(logOutput)
 }
@@ -134,8 +146,6 @@ func loadConfig(path string, firstRun bool) {
 				if firstRun {
 					fmt.Sscanf(val, "%d", &newCfg.MaxBufferSize)
 				}
-			case "log_file":
-				newCfg.LogFile = val
 			case "max_log_size":
 				fmt.Sscanf(val, "%d", &newCfg.MaxLogSize)
 			case "max_log_backups":
@@ -151,7 +161,7 @@ func loadConfig(path string, firstRun bool) {
 
 	// 检查是否需要更新 Logger
 	// 仅在首次运行或日志配置变更时更新
-	if firstRun || newCfg.LogFile != cfg.LogFile || newCfg.MaxLogSize != cfg.MaxLogSize || newCfg.MaxLogBackups != cfg.MaxLogBackups {
+	if firstRun || newCfg.MaxLogSize != cfg.MaxLogSize || newCfg.MaxLogBackups != cfg.MaxLogBackups {
 		setupLogger(newCfg)
 	}
 

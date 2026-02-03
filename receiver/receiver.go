@@ -5,23 +5,29 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 
 	"golang.org/x/net/ipv4"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 type Config struct {
-	ListenPort  string
-	InjectIP    string
-	LogFile     string
-	NodeMapping map[uint16]string
+	ListenPort    string
+	InjectIP      string
+	NodeMapping   map[uint16]string
+	// Logging
+	MaxLogSize    int
+	MaxLogBackups int
 }
 
 var (
@@ -29,10 +35,45 @@ var (
 	cfgLock     sync.RWMutex
 	nodeTracker = make(map[uint16]uint32)
 	trackerLock sync.Mutex
+	logOutput   io.Writer
 )
 
+func getDefaultLogPath() string {
+	if runtime.GOOS == "windows" {
+		return "receiver.log"
+	}
+	// Linux / Unix
+	return "/var/log/traptunnel/receiver.log"
+}
+
+func setupLogger(newCfg Config) {
+	logPath := getDefaultLogPath()
+	
+	// 确保存储日志的目录存在 (仅针对 Linux)
+	if runtime.GOOS != "windows" {
+		dir := filepath.Dir(logPath)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			log.SetOutput(os.Stdout)
+			log.Printf("[!] 无法创建日志目录 %s: %v. 将仅输出到控制台。", dir, err)
+			return
+		}
+	}
+
+	l := &lumberjack.Logger{
+		Filename:   logPath,
+		MaxSize:    newCfg.MaxLogSize, // megabytes
+		MaxBackups: newCfg.MaxLogBackups,
+		MaxAge:     28,   // days
+		Compress:   true, // disabled by default
+	}
+
+	// MultiWriter: Stdout (for systemd) + File (for rotation)
+	logOutput = io.MultiWriter(os.Stdout, l)
+	log.SetOutput(logOutput)
+}
+
 // 简易 INI 解析
-func loadConfig(path string) {
+func loadConfig(path string, firstRun bool) {
 	file, err := os.Open(path)
 	if err != nil {
 		log.Printf("[!] 配置文件读取失败: %v", err)
@@ -40,11 +81,23 @@ func loadConfig(path string) {
 	}
 	defer file.Close()
 
+	// 临时配置，默认值
 	newCfg := Config{
-		ListenPort:  "10000",
-		InjectIP:    "127.0.0.1",
-		LogFile:     "origin_trap_receiver.log",
-		NodeMapping: make(map[uint16]string),
+		ListenPort:    "10000",
+		InjectIP:      "127.0.0.1",
+		NodeMapping:   make(map[uint16]string),
+		MaxLogSize:    10,
+		MaxLogBackups: 100,
+	}
+	
+	// 如果不是首次运行，保留旧的 NodeMapping，稍后覆盖
+	if !firstRun {
+		cfgLock.RLock()
+		// 复制旧的 mapping
+		for k, v := range cfg.NodeMapping {
+			newCfg.NodeMapping[k] = v
+		}
+		cfgLock.RUnlock()
 	}
 
 	scanner := bufio.NewScanner(file)
@@ -75,8 +128,14 @@ func loadConfig(path string) {
 				}
 			case "logging":
 				switch k {
-				case "log_file":
-					newCfg.LogFile = v
+				case "max_log_size":
+					if val, err := strconv.Atoi(v); err == nil {
+						newCfg.MaxLogSize = val
+					}
+				case "max_log_backups":
+					if val, err := strconv.Atoi(v); err == nil {
+						newCfg.MaxLogBackups = val
+					}
 				}
 			case "nodes":
 				if id, err := strconv.ParseUint(k, 10, 16); err == nil {
@@ -84,6 +143,11 @@ func loadConfig(path string) {
 				}
 			}
 		}
+	}
+
+	// 检查日志配置是否变更
+	if firstRun || newCfg.MaxLogSize != cfg.MaxLogSize || newCfg.MaxLogBackups != cfg.MaxLogBackups {
+		setupLogger(newCfg)
 	}
 
 	cfgLock.Lock()
@@ -214,7 +278,7 @@ func setupSignalHandler(configPath string) {
 	go func() {
 		for range c {
 			log.Println("Received SIGHUP, reloading config...")
-			loadConfig(configPath)
+			loadConfig(configPath, false)
 		}
 	}()
 }
@@ -224,7 +288,7 @@ func main() {
 	flag.Parse()
 	
 	// 初始加载配置
-	loadConfig(*configPath)
+	loadConfig(*configPath, true)
 	
 	// 设置信号监听
 	setupSignalHandler(*configPath)
