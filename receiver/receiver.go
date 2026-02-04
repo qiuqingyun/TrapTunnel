@@ -336,7 +336,7 @@ func main() {
 	setupSignalHandler(*configPath)
 
 	// 初始化注入 Socket
-	packetConn, err := net.ListenPacket("ip4:raw", "0.0.0.0")
+	packetConn, err := net.ListenPacket("ip4:udp", "0.0.0.0")
 	if err != nil {
 		slog.Error("Raw Socket 创建失败 (需 root 权限)", "error", err)
 		os.Exit(1)

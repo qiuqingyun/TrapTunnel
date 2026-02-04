@@ -70,15 +70,45 @@ check_deps() {
   if ! command -v go >/dev/null 2>&1; then
     if command -v go.exe >/dev/null 2>&1; then
       GO_CMD="go.exe"
+    elif [[ -x "/mnt/c/Program Files/Go/bin/go.exe" ]]; then
+      GO_CMD="/mnt/c/Program Files/Go/bin/go.exe"
     else
       fail "missing dependency: go"
     fi
   fi
 
-  local deps=("tar" "gzip" "sed" "find")
+  local deps=("tar" "gzip" "sed" "find" "dd" "od" "tr")
   for d in "${deps[@]}"; do
     command -v "$d" >/dev/null 2>&1 || fail "missing dependency: $d"
   done
+}
+
+get_elf_machine() {
+  local file="$1"
+  local magic
+  magic="$(dd if="$file" bs=1 count=4 2>/dev/null | od -An -t x1 | tr -d ' \n')"
+  if [[ "$magic" != "7f454c46" ]]; then
+    fail "invalid binary format (not ELF): $file"
+  fi
+  dd if="$file" bs=1 skip=18 count=2 2>/dev/null | od -An -t u2 | tr -d ' \n'
+}
+
+validate_binary_arch() {
+  local file="$1"
+  local arch="$2"
+  local machine
+  machine="$(get_elf_machine "$file")"
+  case "$arch" in
+    amd64)
+      [[ "$machine" == "62" ]] || fail "binary arch mismatch: $file (expected amd64)"
+      ;;
+    arm64)
+      [[ "$machine" == "183" ]] || fail "binary arch mismatch: $file (expected arm64)"
+      ;;
+    *)
+      fail "unknown arch: $arch"
+      ;;
+  esac
 }
 
 get_version() {
@@ -120,6 +150,7 @@ build_component_arch() {
   if needs_build "$component" "$arch"; then
     log_info "building $component linux/$arch"
     (cd "$ROOT_DIR" && GOOS=linux GOARCH="$arch" CGO_ENABLED=0 "$GO_CMD" build -o "build/$component/${component}-linux-${arch}" "./$component")
+    validate_binary_arch "$output" "$arch"
   else
     log_info "skip build $component linux/$arch (no changes)"
   fi
@@ -133,6 +164,8 @@ package_component_combined() {
   
   [[ -f "$bin_amd64" ]] || fail "missing binary: $bin_amd64"
   [[ -f "$bin_arm64" ]] || fail "missing binary: $bin_arm64"
+  validate_binary_arch "$bin_amd64" "amd64"
+  validate_binary_arch "$bin_arm64" "arm64"
 
   local version
   version="$(get_version)"
@@ -150,6 +183,8 @@ package_component_combined() {
   # 复制并重命名二进制文件
   cp "$bin_amd64" "$pkg_dir/${component}-amd64"
   cp "$bin_arm64" "$pkg_dir/${component}-arm64"
+  # 确保二进制文件有执行权限
+  chmod +x "$pkg_dir/${component}-amd64" "$pkg_dir/${component}-arm64"
 
   # 复制并处理配置文件
   if [[ -f "$TEMPLATE_DIR/${component}.conf" ]]; then
