@@ -5,7 +5,11 @@ COMPONENT="{{COMPONENT_NAME}}"
 SERVICE_NAME="traptunnel-${COMPONENT}"
 SERVICE_TEMPLATE="traptunnel-${COMPONENT}.service"
 DEFAULT_INSTALL_DIR="/opt/${COMPONENT}"
-DEFAULT_USER="traptunnel-${COMPONENT}"
+if [ -n "${SUDO_USER:-}" ]; then
+  DEFAULT_USER="$SUDO_USER"
+else
+  DEFAULT_USER="$(whoami)"
+fi
 
 log_time() { date +"%Y-%m-%d %H:%M:%S"; }
 log() { printf "[%s] %s\n" "$(log_time)" "$*"; }
@@ -46,17 +50,8 @@ for cmd in systemctl mkdir cp mv sed id ln; do
   command -v "$cmd" >/dev/null 2>&1 || fail "缺少依赖命令: $cmd"
 done
 
-if [[ "$SERVICE_USER" != "root" ]]; then
-  if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
-    if command -v useradd >/dev/null 2>&1; then
-      useradd --system --no-create-home --shell /sbin/nologin "$SERVICE_USER" || useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
-    elif command -v adduser >/dev/null 2>&1; then
-      adduser --system --no-create-home --shell /sbin/nologin "$SERVICE_USER" || adduser --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
-    else
-      fail "缺少 useradd 或 adduser"
-    fi
-    log "创建用户 $SERVICE_USER"
-  fi
+if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
+  fail "用户 $SERVICE_USER 不存在"
 fi
 
 timestamp="$(date +%Y%m%d%H%M%S)"
@@ -108,10 +103,25 @@ fi
 
 cp "$INSTALL_DIR/${COMPONENT}" "/usr/local/bin/${COMPONENT}"
 
-sed -e "s#{{INSTALL_DIR}}#${INSTALL_DIR}#g" -e "s#{{SERVICE_USER}}#${SERVICE_USER}#g" "./${SERVICE_TEMPLATE}" > "$service_path"
+SERVICE_GROUP=$(id -gn "$SERVICE_USER")
+log "配置服务运行用户: $SERVICE_USER (组: $SERVICE_GROUP)"
+
+# 确保日志目录存在并具有正确权限
+LOG_DIR="/var/log/traptunnel"
+if [[ ! -d "$LOG_DIR" ]]; then
+  mkdir -p "$LOG_DIR"
+  log "创建日志目录: $LOG_DIR"
+fi
+chown "$SERVICE_USER:$SERVICE_GROUP" "$LOG_DIR"
+chmod 755 "$LOG_DIR"
+
+sed -e "s#{{INSTALL_DIR}}#${INSTALL_DIR}#g" \
+    -e "s#{{SERVICE_USER}}#${SERVICE_USER}#g" \
+    -e "s#{{SERVICE_GROUP}}#${SERVICE_GROUP}#g" \
+    "./${SERVICE_TEMPLATE}" > "$service_path"
 
 if [[ "$SERVICE_USER" != "root" ]]; then
-  chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
+  chown -R "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR"
 fi
 
 systemctl daemon-reload
