@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"encoding/binary"
 	"flag"
 	"fmt"
@@ -18,6 +17,9 @@ import (
 	"syscall"
 	"time"
 
+	"gopkg.in/ini.v1"
+	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
 	"golang.org/x/net/ipv4"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
@@ -113,14 +115,13 @@ func parseLogLevel(s string) slog.Level {
 	}
 }
 
-// 简易 INI 解析
+// 使用 ini.v1 库解析
 func loadConfig(path string, firstRun bool) {
-	file, err := os.Open(path)
+	cfgFile, err := ini.Load(path)
 	if err != nil {
 		slog.Error("配置文件读取失败", "error", err)
 		return
 	}
-	defer file.Close()
 
 	// 临时配置，默认值
 	newCfg := Config{
@@ -142,48 +143,22 @@ func loadConfig(path string, firstRun bool) {
 		cfgLock.RUnlock()
 	}
 
-	scanner := bufio.NewScanner(file)
-	currentSection := ""
+	// Server Section
+	sectionServer := cfgFile.Section("server")
+	newCfg.ListenPort = sectionServer.Key("listen_port").MustString(newCfg.ListenPort)
+	newCfg.InjectIP = sectionServer.Key("inject_ip").MustString(newCfg.InjectIP)
 
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
+	// Logging Section
+	sectionLogging := cfgFile.Section("logging")
+	newCfg.MaxLogSize = sectionLogging.Key("max_log_size").MustInt(newCfg.MaxLogSize)
+	newCfg.MaxLogBackups = sectionLogging.Key("max_log_backups").MustInt(newCfg.MaxLogBackups)
+	newCfg.LogLevel = sectionLogging.Key("log_level").MustString(newCfg.LogLevel)
 
-		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-			currentSection = strings.TrimSuffix(strings.TrimPrefix(line, "["), "]")
-			continue
-		}
-
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) == 2 {
-			k, v := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
-			
-			switch currentSection {
-			case "server":
-				switch k {
-				case "listen_port":
-					newCfg.ListenPort = v
-				case "inject_ip":
-					newCfg.InjectIP = v
-				}
-			case "logging":
-				switch k {
-				case "max_log_size":
-					if val, err := strconv.Atoi(v); err == nil {
-						newCfg.MaxLogSize = val
-					}
-				case "max_log_backups":
-					if val, err := strconv.Atoi(v); err == nil {
-						newCfg.MaxLogBackups = val
-					}
-				}
-			case "nodes":
-				if id, err := strconv.ParseUint(k, 10, 16); err == nil {
-					newCfg.NodeMapping[uint16(id)] = v
-				}
-			}
+	// Nodes Section
+	sectionNodes := cfgFile.Section("nodes")
+	for _, key := range sectionNodes.Keys() {
+		if id, err := strconv.ParseUint(key.Name(), 10, 16); err == nil {
+			newCfg.NodeMapping[uint16(id)] = key.String()
 		}
 	}
 
@@ -214,53 +189,65 @@ func getInjectIP() string {
 	return cfg.InjectIP
 }
 
-// RFC 791 Checksum 算法
-func checksum(data []byte) uint16 {
-	var sum uint32
-	for i := 0; i < len(data)-1; i += 2 {
-		sum += uint32(binary.BigEndian.Uint16(data[i : i+2]))
-	}
-	if len(data)%2 != 0 {
-		sum += uint32(data[len(data)-1]) << 8
-	}
-	for sum > 0xffff {
-		sum = (sum >> 16) + (sum & 0xffff)
-	}
-	return ^uint16(sum)
-}
-
 func patchAndInject(raw []byte, rawConn *ipv4.RawConn) {
-	if len(raw) < 20 {
+	// 使用 gopacket 解析数据包
+	packet := gopacket.NewPacket(raw, layers.LayerTypeIPv4, gopacket.Default)
+	
+	// 获取 IP 层
+	ipLayer := packet.Layer(layers.LayerTypeIPv4)
+	if ipLayer == nil {
+		return
+	}
+	ip, _ := ipLayer.(*layers.IPv4)
+
+	// 获取 UDP 层
+	udpLayer := packet.Layer(layers.LayerTypeUDP)
+	if udpLayer == nil {
+		return
+	}
+	udp, _ := udpLayer.(*layers.UDP)
+
+	// 修改目标 IP
+	newDstIP := net.ParseIP(getInjectIP())
+	ip.DstIP = newDstIP
+
+	// 重新计算 UDP 校验和
+	// gopacket 会自动处理伪首部
+	udp.SetNetworkLayerForChecksum(ip)
+
+	// 序列化修改后的 UDP 数据包
+	buffer := gopacket.NewSerializeBuffer()
+	options := gopacket.SerializeOptions{
+		ComputeChecksums: true,
+		FixLengths:       true,
+	}
+	
+	if err := gopacket.SerializeLayers(buffer, options, udp, gopacket.Payload(udp.Payload)); err != nil {
+		slog.Error("序列化失败", "error", err)
 		return
 	}
 
-	// 1. 解析 IP 头
-	header, _ := ipv4.ParseHeader(raw)
-	ihl := header.Len
-	udpHeader := raw[ihl : ihl+8]
-	pdu := raw[ihl+8:]
+	// 使用 ipv4.RawConn 发送
+	// 注意: RawConn 会自动处理 IP 头 (包括 Checksum), 我们只需要传入 Header 和 Payload (UDP + Data)
+	// 但 gopacket 的 ipv4 layer 已经修改了 DstIP，我们需要确保传给 RawConn 的 header 也是新的
+	
+	// 由于 gopacket 和 x/net/ipv4 的结构体不兼容，我们需要手动转换或者直接用 RawConn 发送 gopacket 序列化的 UDP 部分
+	// 但 RawConn 需要 ipv4.Header 结构体。
+	// 这里最简单的方式是: 使用 x/net/ipv4 解析 Header (已有的逻辑)，但使用 gopacket 计算 UDP Checksum
+	
+	// 为了利用 gopacket 的校验和计算能力，我们已经有了 udp 层的正确 Checksum (在 SerializeLayers 后)
+	// 现在我们可以把新的 UDP 包取出来
+	newUDPBytes := buffer.Bytes()
+	
+	// 构造 ipv4.Header
+	header, err := ipv4.ParseHeader(raw)
+	if err != nil {
+		return
+	}
+	header.Dst = newDstIP
+	header.Checksum = 0 // RawConn 计算
 
-	// 2. 修改目的 IP
-	header.Dst = net.ParseIP(getInjectIP())
-	header.Checksum = 0 // ipv4.RawConn 会自动计算 IP 校验和
-
-	// 3. 重算 UDP 校验和 (需伪首部)
-	// 构造伪首部: Src(4) + Dst(4) + Zero(1) + Proto(1) + Len(2)
-	udpLen := binary.BigEndian.Uint16(udpHeader[4:6])
-	pseudo := make([]byte, 12)
-	copy(pseudo[0:4], header.Src.To4())
-	copy(pseudo[4:8], header.Dst.To4())
-	pseudo[9] = 17 // UDP
-	binary.BigEndian.PutUint16(pseudo[10:12], udpLen)
-
-	// 清空原 UDP Checksum 位
-	udpHeader[6], udpHeader[7] = 0, 0
-	checkData := append(pseudo, append(udpHeader, pdu...)...)
-	newUDPCheck := checksum(checkData)
-	binary.BigEndian.PutUint16(udpHeader[6:8], newUDPCheck)
-
-	// 4. 写入 Raw Socket
-	if err := rawConn.WriteTo(header, append(udpHeader, pdu...), nil); err != nil {
+	if err := rawConn.WriteTo(header, newUDPBytes, nil); err != nil {
 		slog.Error("注入失败", "component", "receiver", "event", "InjectFailed", "error", err)
 	} else {
 		slog.Debug("数据包注入成功", "component", "receiver", "event", "PacketInjected", "len", len(raw))
@@ -286,6 +273,13 @@ func handleNode(conn net.Conn, rawConn *ipv4.RawConn) {
 
 		for len(buffer) >= 4 {
 			totalLen := binary.BigEndian.Uint32(buffer[0:4])
+			
+			// 安全检查: 限制最大包大小 (例如 10MB)，防止 DoS 攻击
+			if totalLen > 10*1024*1024 {
+				slog.Error("数据包过大，断开连接", "component", "receiver", "event", "SecurityAlert", "size", totalLen, "conn_id", connID)
+				return
+			}
+
 			if len(buffer) < int(4+totalLen) {
 				break
 			}

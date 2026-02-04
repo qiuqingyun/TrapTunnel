@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"encoding/binary"
 	"flag"
 	"fmt"
@@ -17,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"gopkg.in/ini.v1"
 	"golang.org/x/net/ipv4"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
@@ -127,14 +127,13 @@ func parseLogLevel(s string) slog.Level {
 	}
 }
 
-// 简易 INI 解析器
+// 使用 ini.v1 库解析
 func loadConfig(path string, firstRun bool) {
-	file, err := os.Open(path)
+	cfgFile, err := ini.Load(path)
 	if err != nil {
 		slog.Error("无法读取配置文件", "error", err)
 		return
 	}
-	defer file.Close()
 
 	// 临时配置对象，避免读取一半被使用
 	var newCfg Config
@@ -154,49 +153,41 @@ func loadConfig(path string, firstRun bool) {
 		newCfg.LogLevel = "INFO"
 	}
 
-	// 临时变量兼容旧配置
-	var bServerIP, bServerPort string
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "[") || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "#") {
-			continue
+	// Common Section
+	sectionCommon := cfgFile.Section("common")
+	if k, err := sectionCommon.GetKey("node_id"); err == nil {
+		if v, err := k.Int(); err == nil {
+			newCfg.NodeID = uint16(v)
 		}
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) == 2 {
-			key := strings.TrimSpace(parts[0])
-			val := strings.TrimSpace(parts[1])
-			switch key {
-			case "node_id":
-				fmt.Sscanf(val, "%d", &newCfg.NodeID)
-			case "servers":
-				servers := strings.Split(val, ",")
-				for _, s := range servers {
-					s = strings.TrimSpace(s)
-					if s != "" {
-						newCfg.Servers = append(newCfg.Servers, s)
-					}
-				}
-			case "b_server_ip":
-				bServerIP = val
-			case "b_server_port":
-				bServerPort = val
-			case "listen_port":
-				fmt.Sscanf(val, "%d", &newCfg.ListenPort)
-			case "reconnect_interval":
-				fmt.Sscanf(val, "%d", &newCfg.ReconnectInterval)
-			case "max_buffer_size":
-				if firstRun {
-					fmt.Sscanf(val, "%d", &newCfg.MaxBufferSize)
-				}
-			case "max_log_size":
-				fmt.Sscanf(val, "%d", &newCfg.MaxLogSize)
-			case "max_log_backups":
-				fmt.Sscanf(val, "%d", &newCfg.MaxLogBackups)
+	}
+
+	if k, err := sectionCommon.GetKey("servers"); err == nil {
+		servers := strings.Split(k.String(), ",")
+		for _, s := range servers {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				newCfg.Servers = append(newCfg.Servers, s)
 			}
 		}
 	}
+
+	// 临时变量兼容旧配置
+	bServerIP := sectionCommon.Key("b_server_ip").String()
+	bServerPort := sectionCommon.Key("b_server_port").String()
+
+	// Advanced Section
+	sectionAdvanced := cfgFile.Section("advanced")
+	newCfg.ListenPort = sectionAdvanced.Key("listen_port").MustInt(newCfg.ListenPort)
+	newCfg.ReconnectInterval = sectionAdvanced.Key("reconnect_interval").MustInt(newCfg.ReconnectInterval)
+	if firstRun {
+		newCfg.MaxBufferSize = sectionAdvanced.Key("max_buffer_size").MustInt(newCfg.MaxBufferSize)
+	}
+
+	// Logging Section
+	sectionLogging := cfgFile.Section("logging")
+	newCfg.MaxLogSize = sectionLogging.Key("max_log_size").MustInt(newCfg.MaxLogSize)
+	newCfg.MaxLogBackups = sectionLogging.Key("max_log_backups").MustInt(newCfg.MaxLogBackups)
+	newCfg.LogLevel = sectionLogging.Key("log_level").MustString(newCfg.LogLevel)
 
 	// 兼容旧配置格式
 	if len(newCfg.Servers) == 0 && bServerIP != "" && bServerPort != "" {
@@ -276,6 +267,8 @@ func packetProducer() {
 		buf := make([]byte, 2048)
 		h, payload, _, err := r.ReadFrom(buf)
 		if err != nil {
+			slog.Error("读取 Raw Socket 失败", "component", "sender", "event", "ReadError", "error", err)
+			time.Sleep(100 * time.Millisecond) // 防止错误导致 CPU 飙升
 			continue
 		}
 
