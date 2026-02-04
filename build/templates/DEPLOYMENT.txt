@@ -1,0 +1,24 @@
+TrapTunnel {{COMPONENT_NAME}} 部署说明
+
+1) 解压后进入目录执行安装
+   sudo ./install.sh
+
+2) 自定义安装路径
+   sudo ./install.sh --install-dir=/opt/{{COMPONENT_NAME}}
+
+3) 指定运行用户
+   sudo ./install.sh --user=traptunnel-{{COMPONENT_NAME}}
+
+4) 服务管理
+   sudo ./start.sh
+   sudo ./stop.sh
+   sudo ./restart.sh
+
+5) 卸载
+   sudo ./uninstall.sh
+
+6) 回滚
+   sudo ./rollback.sh
+
+7) 部署验证
+   sudo ./verify.sh
