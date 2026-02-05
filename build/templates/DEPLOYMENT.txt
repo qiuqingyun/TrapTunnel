@@ -4,7 +4,7 @@ TrapTunnel {{COMPONENT_NAME}} 部署说明
    sudo ./install.sh
 
 2) 自定义安装路径
-   sudo ./install.sh --install-dir=/opt/{{COMPONENT_NAME}}
+   sudo ./install.sh --install-dir=/opt/traptunnel/{{COMPONENT_NAME}}
 
 3) 指定运行用户
    sudo ./install.sh --user=traptunnel-{{COMPONENT_NAME}}

@@ -3,7 +3,7 @@ set -euo pipefail
 
 COMPONENT="{{COMPONENT_NAME}}"
 SERVICE_NAME="traptunnel-${COMPONENT}"
-DEFAULT_INSTALL_DIR="/opt/${COMPONENT}"
+DEFAULT_INSTALL_DIR="/opt/traptunnel/${COMPONENT}"
 
 log_time() { date +"%Y-%m-%d %H:%M:%S"; }
 log() { printf "[%s] %s\n" "$(log_time)" "$*"; }

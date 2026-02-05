@@ -4,7 +4,7 @@ set -euo pipefail
 COMPONENT="{{COMPONENT_NAME}}"
 SERVICE_NAME="traptunnel-${COMPONENT}"
 SERVICE_TEMPLATE="traptunnel-${COMPONENT}.service"
-DEFAULT_INSTALL_DIR="/opt/${COMPONENT}"
+DEFAULT_INSTALL_DIR="/opt/traptunnel/${COMPONENT}"
 if [ -n "${SUDO_USER:-}" ]; then
   DEFAULT_USER="$SUDO_USER"
 else

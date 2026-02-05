@@ -196,7 +196,7 @@ func loadConfig(path string, firstRun bool) {
 
 	// 检查是否需要更新 Logger
 	// 仅在首次运行或日志配置变更时更新
-	if firstRun || newCfg.MaxLogSize != cfg.MaxLogSize || newCfg.MaxLogBackups != cfg.MaxLogBackups {
+	if firstRun || newCfg.MaxLogSize != cfg.MaxLogSize || newCfg.MaxLogBackups != cfg.MaxLogBackups || newCfg.LogLevel != cfg.LogLevel {
 		setupLogger(newCfg)
 	}
 
@@ -273,6 +273,7 @@ func packetProducer() {
 		}
 
 		if len(payload) >= 4 {
+			srcPort := binary.BigEndian.Uint16(payload[0:2])
 			dstPort := binary.BigEndian.Uint16(payload[2:4])
 			// 获取当前监听端口
 			cfgLock.RLock()
@@ -285,7 +286,9 @@ func packetProducer() {
 					"component", "sender", 
 					"event", "PacketCaptured", 
 					"src_ip", h.Src.String(), 
-					"dst_port", dstPort, 
+					"dst_ip", h.Dst.String(),
+					"src_port", srcPort,
+					"dst_port", dstPort,
 					"length", len(payload),
 					"seq", counter+1,
 				)
@@ -361,7 +364,17 @@ func tunnelConsumer() {
 				slog.Error("发送错误", "component", "sender", "event", "SendError", "error", err, "seq", data.Seq)
 				break
 			}
-			slog.Debug("消息发送成功", "component", "sender", "event", "MsgSent", "seq", data.Seq, "size", totalLen)
+			var trapSrcIP, trapDstIP string
+			var trapSrcPort, trapDstPort uint16
+			if ipHdr, err := ipv4.ParseHeader(data.Packet); err == nil {
+				if ipHdr.Protocol == 17 && ipHdr.Len > 0 && len(data.Packet) >= ipHdr.Len+4 {
+					trapSrcIP = ipHdr.Src.String()
+					trapDstIP = ipHdr.Dst.String()
+					trapSrcPort = binary.BigEndian.Uint16(data.Packet[ipHdr.Len : ipHdr.Len+2])
+					trapDstPort = binary.BigEndian.Uint16(data.Packet[ipHdr.Len+2 : ipHdr.Len+4])
+				}
+			}
+			slog.Debug("Trap 已发送到 Receiver", "component", "sender", "event", "TrapSent", "node_id", nodeID, "seq", data.Seq, "src_ip", trapSrcIP, "dst_ip", trapDstIP, "src_port", trapSrcPort, "dst_port", trapDstPort, "size", totalLen)
 		}
 
 		connLock.Lock()

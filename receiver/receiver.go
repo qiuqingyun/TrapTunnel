@@ -163,7 +163,7 @@ func loadConfig(path string, firstRun bool) {
 	}
 
 	// 检查日志配置是否变更
-	if firstRun || newCfg.MaxLogSize != cfg.MaxLogSize || newCfg.MaxLogBackups != cfg.MaxLogBackups {
+	if firstRun || newCfg.MaxLogSize != cfg.MaxLogSize || newCfg.MaxLogBackups != cfg.MaxLogBackups || newCfg.LogLevel != cfg.LogLevel {
 		setupLogger(newCfg)
 	}
 
@@ -250,7 +250,7 @@ func patchAndInject(raw []byte, rawConn *ipv4.RawConn) {
 	if err := rawConn.WriteTo(header, newUDPBytes, nil); err != nil {
 		slog.Error("注入失败", "component", "receiver", "event", "InjectFailed", "error", err)
 	} else {
-		slog.Debug("数据包注入成功", "component", "receiver", "event", "PacketInjected", "len", len(raw))
+		slog.Debug("数据包注入成功", "component", "receiver", "event", "PacketInjected", "dst_ip", newDstIP.String(), "len", len(raw))
 	}
 }
 
@@ -304,7 +304,17 @@ func handleNode(conn net.Conn, rawConn *ipv4.RawConn) {
 			nodeTracker[nodeID] = seq
 			trackerLock.Unlock()
 
-			slog.Debug("收到数据包", "component", "receiver", "event", "MsgReceived", "node_id", nodeID, "seq", seq, "size", totalLen)
+			var trapSrcIP, trapDstIP string
+			var trapSrcPort, trapDstPort uint16
+			if ipHdr, err := ipv4.ParseHeader(packet); err == nil {
+				if ipHdr.Protocol == 17 && ipHdr.Len > 0 && len(packet) >= ipHdr.Len+4 {
+					trapSrcIP = ipHdr.Src.String()
+					trapDstIP = ipHdr.Dst.String()
+					trapSrcPort = binary.BigEndian.Uint16(packet[ipHdr.Len : ipHdr.Len+2])
+					trapDstPort = binary.BigEndian.Uint16(packet[ipHdr.Len+2 : ipHdr.Len+4])
+				}
+			}
+			slog.Debug("收到 Trap (来自 Sender)", "component", "receiver", "event", "TrapReceived", "sender", connID, "node_id", nodeID, "node_name", getNodeName(nodeID), "seq", seq, "src_ip", trapSrcIP, "dst_ip", trapDstIP, "src_port", trapSrcPort, "dst_port", trapDstPort, "size", totalLen)
 			patchAndInject(packet, rawConn)
 			buffer = buffer[4+totalLen:]
 		}
