@@ -375,13 +375,13 @@ listen = "0.0.0.0:12000"
 
 ### 12.1 基础抽象
 
-- [ ] 确定 `cmd/` 和 `internal/` 的新目录结构
-- [ ] 抽取统一 `frame` 数据结构
-- [ ] 抽取 `frame` 编解码模块
-- [ ] 抽取共享日志初始化模块
-- [ ] 抽取共享配置加载模块
-- [ ] 引入统一 `profile` 概念：`edge / relay / sink / full`
-- [ ] 建立统一 pipeline / sink 抽象
+- [x] 确定 `cmd/` 和 `internal/` 的新目录结构
+- [x] 抽取统一 `frame` 数据结构
+- [x] 抽取 `frame` 编解码模块
+- [x] 抽取共享日志初始化模块
+- [x] 抽取共享配置加载模块
+- [x] 引入统一 `profile` 概念：`edge / relay / sink / full`
+- [x] 建立统一 pipeline / sink 抽象
 
 ### 12.2 Node 最小闭环
 
@@ -443,6 +443,7 @@ listen = "0.0.0.0:12000"
 - [ ] 更新安装/卸载/验证脚本
 - [ ] 补充 `edge / relay / sink` 示例配置
 - [ ] 补充 `A-F` 和 `G/H` 的部署示例
+- [ ] 明确旧 `sender` / `receiver` 的下线条件和回滚窗口
 
 ### 12.8 测试与验证
 
@@ -468,6 +469,20 @@ listen = "0.0.0.0:12000"
 - [ ] 验证 `A-F -> G/H -> inject -> inManage` 修复链路稳定
 - [ ] 最后引入 export 给新程序接入
 - [ ] 确认回滚路径和旧部署模板可用
+
+### 12.10 完全切换到 Node
+
+- [ ] `cmd/node` 已具备替代旧 `sender` 的能力
+- [ ] `cmd/node` 已具备替代旧 `receiver` 的能力
+- [ ] `A-F` 生产环境已稳定运行 `node edge/relay`
+- [ ] `G/H` 生产环境已稳定运行 `node sink`
+- [ ] `node` 的构建、安装、验证和运行脚本已完全替代旧入口
+- [ ] README 和部署文档已切换为以 `node` 为主
+- [ ] 旧 `sender` / `receiver` 已完成至少一轮回滚演练
+- [ ] 已确认回退到旧入口的窗口可以关闭
+- [ ] 删除旧 `sender` 目录
+- [ ] 删除旧 `receiver` 目录
+- [ ] 删除旧入口对应的模板和无用配置文件
 
 ## 13. 结论
 
