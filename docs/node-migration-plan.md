@@ -385,13 +385,13 @@ listen = "0.0.0.0:12000"
 
 ### 12.2 Node 最小闭环
 
-- [ ] 新建统一入口 `cmd/node`
-- [ ] 支持 `capture` 能力
-- [ ] 支持 `ingress` 能力
-- [ ] 支持基础 `egress` 能力
-- [ ] 支持 `inject` 能力
-- [ ] 支持 `profile = edge`
-- [ ] 支持 `profile = sink`
+- [x] 新建统一入口 `cmd/node`
+- [x] 支持 `capture` 能力
+- [x] 支持 `ingress` 能力
+- [x] 支持基础 `egress` 能力
+- [x] 支持 `inject` 能力
+- [x] 支持 `profile = edge`
+- [x] 支持 `profile = sink`
 - [ ] 跑通 `edge -> sink -> inject` 的最小链路
 
 ### 12.3 Relay 与多上游转发
@@ -428,9 +428,9 @@ listen = "0.0.0.0:12000"
 ### 12.6 配置与兼容
 
 - [ ] 统一配置格式切换为 `node.toml`
-- [ ] 配置结构支持 `capture / ingress / egress / inject / export`
-- [ ] 增加配置合法性校验
-- [ ] 增加 `inject.port` 与 `capture.listen_ports` 冲突校验
+- [x] 配置结构支持 `capture / ingress / egress / inject / export`
+- [x] 增加配置合法性校验
+- [x] 增加 `inject.port` 与 `capture.listen_ports` 冲突校验
 - [ ] 兼容读取旧版 `sender` 配置
 - [ ] 兼容读取旧版 `receiver` 配置
 - [ ] 或提供旧配置到 `node.toml` 的转换工具

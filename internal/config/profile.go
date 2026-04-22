@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"slices"
 )
 
 type Profile string
@@ -80,7 +82,170 @@ func (p Profile) Capabilities() []string {
 	}
 }
 
+func (p Profile) Valid() bool {
+	switch p {
+	case ProfileEdge, ProfileRelay, ProfileSink, ProfileFull:
+		return true
+	default:
+		return false
+	}
+}
+
+func (p Profile) Supports(capability string) bool {
+	return slices.Contains(p.Capabilities(), capability)
+}
+
+func ApplyNodeDefaults(cfg *NodeConfig) {
+	if cfg == nil {
+		return
+	}
+
+	switch cfg.Profile {
+	case ProfileEdge:
+		cfg.Capture.Enabled = true
+		cfg.Egress.Enabled = true
+	case ProfileRelay:
+		cfg.Capture.Enabled = true
+		cfg.Ingress.Enabled = true
+		cfg.Egress.Enabled = true
+	case ProfileSink:
+		cfg.Ingress.Enabled = true
+		cfg.Inject.Enabled = true
+	case ProfileFull:
+		cfg.Capture.Enabled = true
+		cfg.Ingress.Enabled = true
+		cfg.Egress.Enabled = true
+		cfg.Inject.Enabled = true
+		cfg.Export.Enabled = true
+	}
+
+	if cfg.Capture.Enabled && len(cfg.Capture.ListenPorts) == 0 {
+		cfg.Capture.ListenPorts = []int{162}
+	}
+	if cfg.Ingress.Enabled && cfg.Ingress.Listen == "" {
+		cfg.Ingress.Listen = "0.0.0.0:10000"
+	}
+	if cfg.Egress.Enabled && cfg.Egress.ReconnectInterval <= 0 {
+		cfg.Egress.ReconnectInterval = 5
+	}
+	if cfg.Inject.Enabled {
+		if cfg.Inject.IP == "" {
+			cfg.Inject.IP = "127.0.0.1"
+		}
+		if cfg.Inject.Port == 0 {
+			cfg.Inject.Port = 162
+		}
+	}
+	if cfg.Export.Enabled {
+		if cfg.Export.Listen == "" {
+			cfg.Export.Listen = "0.0.0.0:12000"
+		}
+		if cfg.Export.Format == "" {
+			cfg.Export.Format = "frame"
+		}
+		if cfg.Export.MaxClients <= 0 {
+			cfg.Export.MaxClients = 32
+		}
+	}
+	if cfg.Logging.Level == "" {
+		cfg.Logging.Level = "INFO"
+	}
+	if cfg.Logging.MaxLogSize <= 0 {
+		cfg.Logging.MaxLogSize = 10
+	}
+	if cfg.Logging.MaxLogBackups <= 0 {
+		cfg.Logging.MaxLogBackups = 100
+	}
+}
+
 func ValidateNode(cfg NodeConfig) error {
+	if cfg.Profile == "" {
+		return fmt.Errorf("node.profile is required")
+	}
+	if !cfg.Profile.Valid() {
+		return fmt.Errorf("unsupported node.profile %q", cfg.Profile)
+	}
+
+	if err := validateCapability(cfg.Profile, "capture", cfg.Capture.Enabled); err != nil {
+		return err
+	}
+	if err := validateCapability(cfg.Profile, "ingress", cfg.Ingress.Enabled); err != nil {
+		return err
+	}
+	if err := validateCapability(cfg.Profile, "egress", cfg.Egress.Enabled); err != nil {
+		return err
+	}
+	if err := validateCapability(cfg.Profile, "inject", cfg.Inject.Enabled); err != nil {
+		return err
+	}
+	if err := validateCapability(cfg.Profile, "export", cfg.Export.Enabled); err != nil {
+		return err
+	}
+
+	if cfg.Capture.Enabled {
+		if cfg.ID == 0 {
+			return fmt.Errorf("node.id is required when capture is enabled")
+		}
+		if len(cfg.Capture.ListenPorts) == 0 {
+			return fmt.Errorf("capture.listen_ports must not be empty when capture is enabled")
+		}
+		for _, port := range cfg.Capture.ListenPorts {
+			if err := validatePort("capture.listen_ports", port); err != nil {
+				return err
+			}
+		}
+	}
+
+	if cfg.Ingress.Enabled && !validListenAddress(cfg.Ingress.Listen) {
+		return fmt.Errorf("ingress.listen must be a valid host:port, got %q", cfg.Ingress.Listen)
+	}
+
+	if cfg.Egress.Enabled {
+		if cfg.ID == 0 {
+			return fmt.Errorf("node.id is required when egress is enabled")
+		}
+		if cfg.Egress.ReconnectInterval <= 0 {
+			return fmt.Errorf("egress.reconnect_interval must be greater than 0")
+		}
+		if len(cfg.Egress.Groups) == 0 {
+			return fmt.Errorf("egress.groups must not be empty when egress is enabled")
+		}
+		for groupIndex, group := range cfg.Egress.Groups {
+			if len(group.Members) == 0 {
+				return fmt.Errorf("egress.groups[%d].members must not be empty", groupIndex)
+			}
+			for memberIndex, member := range group.Members {
+				if !validListenAddress(member) {
+					return fmt.Errorf("egress.groups[%d].members[%d] must be a valid host:port, got %q", groupIndex, memberIndex, member)
+				}
+			}
+		}
+	}
+
+	if cfg.Inject.Enabled {
+		if ip := net.ParseIP(cfg.Inject.IP); ip == nil {
+			return fmt.Errorf("inject.ip must be a valid IP address, got %q", cfg.Inject.IP)
+		}
+		if err := validatePort("inject.port", cfg.Inject.Port); err != nil {
+			return err
+		}
+	}
+	if cfg.Inject.SNMPv1AgentAddrOverride && !cfg.Inject.Enabled {
+		return fmt.Errorf("inject.snmpv1_agent_addr_override requires inject.enabled")
+	}
+
+	if cfg.Export.Enabled {
+		if !validListenAddress(cfg.Export.Listen) {
+			return fmt.Errorf("export.listen must be a valid host:port, got %q", cfg.Export.Listen)
+		}
+		if cfg.Export.Format != "frame" {
+			return fmt.Errorf("export.format must be %q, got %q", "frame", cfg.Export.Format)
+		}
+		if cfg.Export.MaxClients <= 0 {
+			return fmt.Errorf("export.max_clients must be greater than 0")
+		}
+	}
+
 	if cfg.Inject.Enabled && cfg.Capture.Enabled {
 		for _, port := range cfg.Capture.ListenPorts {
 			if port == cfg.Inject.Port {
@@ -89,4 +254,32 @@ func ValidateNode(cfg NodeConfig) error {
 		}
 	}
 	return nil
+}
+
+func validateCapability(profile Profile, capability string, enabled bool) error {
+	if !enabled {
+		if profile.Supports(capability) {
+			return fmt.Errorf("profile %q requires %s.enabled", profile, capability)
+		}
+		return nil
+	}
+	if !profile.Supports(capability) {
+		return fmt.Errorf("profile %q does not support %s.enabled", profile, capability)
+	}
+	return nil
+}
+
+func validatePort(field string, port int) error {
+	if port <= 0 || port > 65535 {
+		return fmt.Errorf("%s must be between 1 and 65535, got %d", field, port)
+	}
+	return nil
+}
+
+func validListenAddress(addr string) bool {
+	if addr == "" {
+		return false
+	}
+	_, _, err := net.SplitHostPort(addr)
+	return err == nil
 }

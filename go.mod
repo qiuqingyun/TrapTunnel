@@ -3,6 +3,7 @@ module traptunnel
 go 1.25.6
 
 require golang.org/x/net v0.49.0
+require github.com/BurntSushi/toml v1.5.0
 
 require (
 	github.com/google/gopacket v1.1.19 // indirect
