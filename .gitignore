@@ -31,4 +31,6 @@ Thumbs.db
 build/receiver/
 build/sender/
 .tmp/
-build/
+build/.staging
+build/node
+build/releases

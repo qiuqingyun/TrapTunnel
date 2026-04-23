@@ -1,0 +1,133 @@
+TrapTunnel 旧配置迁移指引
+
+一、迁移范围
+1. sender.conf 迁移到 node.toml，通常落到 edge 或 relay 角色。
+2. receiver.conf 迁移到 node.toml，通常落到 sink 角色。
+3. 新版 node 不再直接读取 sender.conf / receiver.conf。
+
+二、sender.conf -> node.toml
+旧配置示例：
+[common]
+node_id = 101
+servers = 10.0.0.1:10000,10.0.0.2:10000
+
+[advanced]
+listen_port = 162
+reconnect_interval = 5
+max_buffer_size = 2000
+
+[logging]
+log_level = INFO
+max_log_size = 10
+max_log_backups = 100
+
+推荐迁移写法：
+[node]
+id = 101
+name = "edge-101"
+profile = "edge"
+
+[capture]
+listen_ports = [162]
+
+[egress]
+reconnect_interval = 5
+
+[[egress.groups]]
+members = ["10.0.0.1:10000", "10.0.0.2:10000"]
+
+[logging]
+level = "INFO"
+max_log_size = 10
+max_log_backups = 100
+
+字段映射：
+1. common.node_id -> node.id
+2. advanced.listen_port -> capture.listen_ports
+3. advanced.reconnect_interval -> egress.reconnect_interval
+4. common.servers -> [[egress.groups]].members
+5. logging.log_level -> logging.level
+6. logging.max_log_size -> logging.max_log_size
+7. logging.max_log_backups -> logging.max_log_backups
+
+关于 servers 的迁移语义：
+1. 如果你要保持旧 sender 的主备语义，建议放到同一个 group 的 members 中。
+2. 如果你要升级为多上游同时收一份，再拆成多个 [[egress.groups]]。
+
+三、receiver.conf -> node.toml
+旧配置示例：
+[server]
+listen_port = 10000
+inject_ip = 127.0.0.1
+
+[logging]
+log_level = INFO
+max_log_size = 10
+max_log_backups = 100
+
+[nodes]
+101 = edge-a
+102 = edge-b
+
+推荐迁移写法：
+[node]
+name = "sink-main"
+profile = "sink"
+
+[ingress]
+listen = "0.0.0.0:10000"
+
+[inject]
+ip = "127.0.0.1"
+port = 162
+snmpv1_agent_addr_override = false
+
+[logging]
+level = "INFO"
+max_log_size = 10
+max_log_backups = 100
+
+字段映射：
+1. server.listen_port -> ingress.listen
+2. server.inject_ip -> inject.ip
+3. logging.log_level -> logging.level
+4. logging.max_log_size -> logging.max_log_size
+5. logging.max_log_backups -> logging.max_log_backups
+6. [nodes] -> 当前无直接等价字段，可删除
+
+四、sender 升级为 relay 的场景
+如果某台旧 sender 未来既要本地抓包，又要接收下游节点转发，再向上游继续发送，就不要迁移成 edge，而应迁移成 relay。
+
+示例：
+[node]
+id = 101
+name = "relay-a"
+profile = "relay"
+
+[capture]
+listen_ports = [162]
+
+[ingress]
+listen = "0.0.0.0:11000"
+
+[egress]
+reconnect_interval = 5
+
+[[egress.groups]]
+members = ["10.20.0.10:10000", "10.20.0.11:10000"]
+
+[logging]
+level = "INFO"
+
+五、SNMPv1 agent-addr 修正
+如果 sink 节点需要按 SNMPv1 Trap 里的 agent-addr 修正源 IP，可在 inject 中开启：
+[inject]
+ip = "127.0.0.1"
+port = 162
+snmpv1_agent_addr_override = true
+
+六、迁移建议顺序
+1. 先从 examples/ 里选最接近角色的模板。
+2. 再按上面的字段映射把旧配置值补进去。
+3. 上线前先执行一次人工复核，重点看 node.id、profile、capture.listen_ports、ingress.listen、egress.groups、inject.ip、inject.port。
+4. 上线后按 TEST_AND_OBSERVE.txt 做验证和观察。

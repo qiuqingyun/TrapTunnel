@@ -1,24 +1,73 @@
-TrapTunnel {{COMPONENT_NAME}} 部署说明
+TrapTunnel {{COMPONENT_NAME}} 生产部署指引
 
-1) 解压后进入目录执行安装
-   sudo ./install.sh
+一、包内主要文件
+1. deploy.sh
+   一键部署脚本，会自动识别目标主机是 x86_64/amd64 还是 aarch64/arm64，并选择对应二进制。
+2. install.sh
+   deploy.sh 的兼容入口，参数完全一致。
+3. node.toml
+   默认配置模板。首次部署可直接修改，升级部署会自动保留旧配置。
+4. TEST_AND_OBSERVE.txt
+   上线后需要测试和观察的内容。
+5. CONFIG_MIGRATION.txt
+   sender.conf / receiver.conf 迁移到 node.toml 的说明。
+6. examples/
+   edge / relay / sink / export / agent-addr 修正示例。
+7. legacy-configs/
+   旧版 sender.conf / receiver.conf 样例，方便对照迁移。
 
-2) 自定义安装路径
-   sudo ./install.sh --install-dir=/opt/traptunnel/{{COMPONENT_NAME}}
+二、上线前准备
+1. 目标环境需为 Linux + systemd。
+2. 需要 root 权限执行部署。
+3. 如果当前线上仍在使用 sender.conf / receiver.conf，请先阅读 CONFIG_MIGRATION.txt。
+4. 首次部署前请按实际角色修改 node.toml，或从 examples/ 中拷贝更接近的模板。
 
-3) 指定运行用户
-   sudo ./install.sh --user=traptunnel-{{COMPONENT_NAME}}
+三、一键部署
+1. 解压后进入发布目录。
+2. 执行：
+   sudo ./deploy.sh
 
-4) 服务管理
+四、常见可选参数
+1. 自定义安装目录：
+   sudo ./deploy.sh --install-dir=/opt/traptunnel/{{COMPONENT_NAME}}
+2. 指定 service 运行用户：
+   sudo ./deploy.sh --user=traptunnel
+
+五、部署脚本行为
+1. 自动识别 CPU 架构并选择 {{COMPONENT_NAME}}-amd64 或 {{COMPONENT_NAME}}-arm64。
+2. 自动备份旧安装目录到 /opt/traptunnel/{{COMPONENT_NAME}}.bak-时间戳。
+3. 自动备份旧 systemd service 文件到 /etc/systemd/system/traptunnel-{{COMPONENT_NAME}}.service.bak-时间戳。
+4. 升级时自动保留旧配置文件；首次部署则写入当前包内的默认 node.toml。
+5. 自动执行 systemctl daemon-reload、enable、restart。
+
+六、部署后验证
+1. 执行：
+   sudo ./verify.sh
+2. 查看服务状态：
+   sudo systemctl status traptunnel-{{COMPONENT_NAME}} --no-pager
+3. 持续观察日志：
+   sudo journalctl -u traptunnel-{{COMPONENT_NAME}} -f
+4. 查看文件日志：
+   sudo tail -f /var/log/traptunnel/{{COMPONENT_NAME}}.log
+
+七、常用运维命令
+1. 启动：
    sudo ./start.sh
+2. 停止：
    sudo ./stop.sh
+3. 重启：
    sudo ./restart.sh
-
-5) 卸载
+4. 回滚：
+   sudo ./rollback.sh
+5. 卸载：
    sudo ./uninstall.sh
 
-6) 回滚
-   sudo ./rollback.sh
+八、建议上线顺序
+1. 先迁移配置，再部署。
+2. 先在单台验证 verify.sh、日志、端口监听和实际 Trap 收发。
+3. 确认无误后再批量推广。
 
-7) 部署验证
-   sudo ./verify.sh
+九、补充说明
+1. capture / inject 依赖原始套接字，service 已附带所需 capability。
+2. 如果你启用了 export，请额外确认 export.listen 对应端口已经开始监听。
+3. 如果目标节点承担 sink 角色并需要兼容 SNMPv1 agent-addr，请在 node.toml 中开启 inject.snmpv1_agent_addr_override，并按 TEST_AND_OBSERVE.txt 观察生效情况。

@@ -22,9 +22,18 @@ fi
 systemctl is-active --quiet "$SERVICE_NAME" || fail "服务未运行: $SERVICE_NAME"
 log "服务状态正常: ${SERVICE_NAME}"
 
+systemctl is-enabled --quiet "$SERVICE_NAME" || fail "服务未启用开机自启: $SERVICE_NAME"
+log "服务已启用开机自启: ${SERVICE_NAME}"
+
 if [[ ! -f "$CONF" ]]; then
   fail "未找到配置文件: $CONF"
 fi
+log "配置文件存在: $CONF"
+
+if [[ ! -x "$INSTALL_DIR/${COMPONENT}" ]]; then
+  fail "未找到可执行文件: $INSTALL_DIR/${COMPONENT}"
+fi
+log "二进制存在: $INSTALL_DIR/${COMPONENT}"
 
 check_tcp_port() {
   local port="$1"
@@ -71,16 +80,30 @@ if [[ "$COMPONENT" == "node" ]]; then
       exit
     }' "$CONF")"
 
+  export_port="$(awk -F'=' '
+    /^\[export\]/ {section="export"; next}
+    /^\[/ {section=""}
+    section=="export" && $1 ~ /listen/ {
+      gsub(/ /, "", $2)
+      sub(/.*:/, "", $2)
+      print $2
+      exit
+    }' "$CONF")"
+
   if [[ -n "$ingress_port" ]]; then
     check_tcp_port "$ingress_port"
     log "TCP 监听正常: ${ingress_port}"
+  fi
+  if [[ -n "$export_port" ]]; then
+    check_tcp_port "$export_port"
+    log "Export TCP 监听正常: ${export_port}"
   fi
   if [[ -n "$capture_port" ]]; then
     log "已读取 capture.listen_ports=${capture_port}；raw socket 场景不通过 ss/netstat 做精确校验"
   fi
 
-  if [[ -z "$ingress_port" && -z "$capture_port" ]]; then
-    fail "未能从 node.toml 识别 ingress.listen 或 capture.listen_ports"
+  if [[ -z "$ingress_port" && -z "$capture_port" && -z "$export_port" ]]; then
+    fail "未能从 node.toml 识别 ingress.listen、capture.listen_ports 或 export.listen"
   fi
 else
   port="$(awk -F'=' 'tolower($1) ~ /listen_port/ {gsub(/ /,"",$2); print $2; exit}' "$CONF")"
@@ -94,4 +117,9 @@ else
     check_udp_port "$port"
   fi
   log "端口监听正常: ${port}"
+fi
+
+if command -v journalctl >/dev/null 2>&1; then
+  log "最近 10 行服务日志:"
+  journalctl -u "$SERVICE_NAME" -n 10 --no-pager || true
 fi

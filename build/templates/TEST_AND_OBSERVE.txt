@@ -1,0 +1,65 @@
+TrapTunnel node 测试与观察清单
+
+一、部署完成后立即确认
+1. 服务状态
+   sudo systemctl status traptunnel-node --no-pager
+2. 基础验证
+   sudo ./verify.sh
+3. 最近日志
+   sudo journalctl -u traptunnel-node -n 100 --no-pager
+4. 文件日志
+   sudo tail -n 100 /var/log/traptunnel/node.log
+
+二、端口与连接确认
+1. 若启用了 ingress.listen，确认对应 TCP 端口已监听：
+   sudo ss -ltnp | grep traptunnel
+2. 若启用了 export.listen，确认 export 端口已监听：
+   sudo ss -ltnp | grep ':12000'
+3. 若是 edge / relay 节点，确认到上游的 TCP 连接能建立：
+   sudo ss -tnp | grep ':10000'
+
+三、按角色观察关键日志
+1. edge 节点重点看：
+   PacketCaptured
+   ConnEstablished
+   TrapSent
+   SendError
+2. relay 节点重点看：
+   PacketCaptured
+   RelayEnqueue
+   FanoutDispatch
+   TrapSent
+   SendError
+3. sink 节点重点看：
+   Startup
+   ClientConnected
+   TrapReceived
+   InjectFailed
+   InjectSourceOverride
+4. 启用了 export 的节点重点看：
+   ExportStartup
+   ExportClientConnected
+   ExportSendError
+   ExportClientClosed
+
+四、上线烟雾测试建议
+1. edge 节点
+   发送 1 条测试 Trap，确认日志出现 PacketCaptured 和 TrapSent。
+2. relay 节点
+   确认既能接收下游连接，也能向上游转发，日志里应出现 RelayEnqueue 和 TrapSent。
+3. sink 节点
+   确认收到隧道帧后能正常注入到本地目标地址，日志里应出现 TrapReceived，业务侧应能收到 Trap。
+4. export 节点
+   连接 export 客户端，确认日志出现 ExportClientConnected，客户端可读到 frame。
+
+五、重点观察项
+1. 是否持续出现 SendError、ConnFailed、AcceptError、ReadError。
+2. 是否出现 FrameTooLarge、DecodeError、InjectFailed。
+3. 是否存在频繁重连、服务反复重启、日志持续刷错。
+4. 若开启 snmpv1_agent_addr_override，确认 InjectSourceOverride 中 effective_src_ip 符合预期。
+5. 若开启多组 egress.groups，确认每个 group 都在按预期收包；若是组内主备，确认故障切换后流量恢复。
+
+六、建议观察窗口
+1. 首次上线后至少连续观察 15 分钟。
+2. 业务高峰期再额外观察 30 分钟。
+3. 升级替换旧 sender / receiver 的当日，建议保留旧版本备份并观察一个完整业务周期。
