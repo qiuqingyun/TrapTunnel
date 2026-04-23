@@ -306,6 +306,110 @@ listen = "0.0.0.0:12000"
 - 旧 HMS 是否继续可用
 - 新程序是否可稳定消费 export 流
 
+### 8.4 本地可复现测试环境
+
+为降低对现网环境的依赖，建议建立一套基于 Linux network namespace 的单机可复现测试环境。该环境用于验证 `12.2` 及之后各阶段的关键链路。
+
+推荐拓扑：
+
+- `ns-device`
+  - 模拟设备发送 Trap
+- `ns-edge`
+  - 运行 `node edge`
+- `ns-sink`
+  - 运行 `node sink`
+  - 同时运行一个 UDP `162` 监听器，用于模拟 `inManage`
+
+推荐链路：
+
+`ns-device -> ns-edge(node edge) -> ns-sink(node sink) -> UDP 162 listener`
+
+该链路可覆盖以下能力：
+
+- `capture`
+- `egress`
+- `ingress`
+- `inject`
+
+推荐地址规划：
+
+- `ns-device <-> ns-edge`
+  - `ns-device = 10.10.1.2/24`
+  - `ns-edge   = 10.10.1.1/24`
+- `ns-edge <-> ns-sink`
+  - `ns-edge   = 10.10.2.1/24`
+  - `ns-sink   = 10.10.2.2/24`
+
+测试时：
+
+- 设备侧向 `10.10.1.1:162` 发送 Trap
+- `node edge` 将 frame 发往 `10.10.2.2:10000`
+- `node sink` 将副本 inject 到本地 `162/UDP`
+- `ns-sink` 内部的 UDP 监听器负责收包验证
+
+建议准备以下测试资源：
+
+- `scripts/dev/setup-netns.sh`
+  - 创建 namespace、veth、IP、路由
+- `scripts/dev/cleanup-netns.sh`
+  - 清理 namespace 和虚拟链路
+- `scripts/dev/send-udp.sh`
+  - 从 `ns-device` 发送测试 UDP 包
+- `examples/node-edge.toml`
+  - `profile = "edge"`
+- `examples/node-sink.toml`
+  - `profile = "sink"`
+- 一个简单的 UDP 监听工具或脚本
+  - 在 `ns-sink` 中监听 `162/UDP`
+  - 打印源 IP、源端口和 payload 大小
+
+推荐验证阶段：
+
+1. 最小闭环
+   - 建立 `ns-device / ns-edge / ns-sink`
+   - 在 `ns-sink` 启动 UDP 162 监听器
+   - 启动 `node sink`
+   - 启动 `node edge`
+   - 从 `ns-device` 发送一个测试 UDP 包
+   - 验证 `ns-sink` 监听器收到数据
+
+2. 稳定性验证
+   - 连续发送 100 或 1000 个 UDP 包
+   - 统计 sink 侧接收数量
+   - 观察程序是否异常退出或阻塞
+
+3. 配置验证
+   - 调整 `ingress.listen`
+   - 调整 `egress.groups`
+   - 调整 `inject.ip` / `inject.port`
+   - 重启后验证行为变化是否符合预期
+
+4. 后续扩展验证
+   - 在 `12.4` 后加入 SNMPv1 `agent-addr` 修正样本
+   - 在 `12.3` 后加入 relay / fanout 用例
+   - 在 `12.5` 后加入 export 订阅用例
+
+本地测试环境的执行要求：
+
+- 需要 root 或 sudo 权限
+- `ip netns` 需要管理员权限
+- `node` 的 `capture` / `inject` 需要原始套接字权限
+
+建议命令形态：
+
+- `sudo ip netns exec ns-edge ./node -c examples/node-edge.toml`
+- `sudo ip netns exec ns-sink ./node -c examples/node-sink.toml`
+
+注意：
+
+- 第一阶段无需先验证真正的 SNMP Trap 语义
+- 先用普通 UDP payload 验证最小闭环是否稳定
+- 等 `inject` 修正能力落地后，再补 SNMPv1 样本测试
+
+配套实现与使用说明见：
+
+- [docs/local-node-test-environment.md](/home/qqy/TrapTunnel/docs/local-node-test-environment.md)
+
 ## 9. 风险与控制
 
 ### 9.1 配置复杂度上升
@@ -392,7 +496,7 @@ listen = "0.0.0.0:12000"
 - [x] 支持 `inject` 能力
 - [x] 支持 `profile = edge`
 - [x] 支持 `profile = sink`
-- [ ] 跑通 `edge -> sink -> inject` 的最小链路
+- [x] 跑通 `edge -> sink -> inject` 的最小链路
 
 ### 12.3 Relay 与多上游转发
 
@@ -447,11 +551,11 @@ listen = "0.0.0.0:12000"
 
 ### 12.8 测试与验证
 
-- [ ] 验证本地采集
-- [ ] 验证 ingress 接收
+- [x] 验证本地采集
+- [x] 验证 ingress 接收
 - [ ] 验证 relay 转发
 - [ ] 验证 fanout + failover
-- [ ] 验证 inject 注入
+- [x] 验证 inject 注入
 - [ ] 验证 export 订阅
 - [ ] 验证 SIGHUP 热重载
 - [ ] 验证 `node_id + seq` 在 relay 后保持不变

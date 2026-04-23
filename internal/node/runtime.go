@@ -302,6 +302,7 @@ func patchAndInject(raw []byte, cfg config.NodeConfig, rawConn *ipv4.RawConn) er
 		return fmt.Errorf("invalid inject ip: %s", cfg.Inject.IP)
 	}
 	ip.DstIP = newDstIP
+	udp.DstPort = layers.UDPPort(cfg.Inject.Port)
 	udp.SetNetworkLayerForChecksum(ip)
 
 	buffer := gopacket.NewSerializeBuffer()

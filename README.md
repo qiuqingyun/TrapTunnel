@@ -201,6 +201,7 @@ go build -o receiver ./receiver
 - [Node 架构设计](/home/qqy/TrapTunnel/docs/node-architecture.md)
 - [Node 改造方案](/home/qqy/TrapTunnel/docs/node-migration-plan.md)
 - [告警管理平台整体架构](/home/qqy/TrapTunnel/docs/alerting-platform-architecture.md)
+- [本地 Node 测试环境](/home/qqy/TrapTunnel/docs/local-node-test-environment.md)
 
 ## 协议格式
 

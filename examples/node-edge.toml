@@ -1,0 +1,18 @@
+[node]
+id = 101
+name = "EDGE-TEST"
+profile = "edge"
+
+[capture]
+listen_ports = [162]
+
+[egress]
+reconnect_interval = 5
+
+[[egress.groups]]
+members = ["10.10.2.2:10000"]
+
+[logging]
+level = "DEBUG"
+max_log_size = 10
+max_log_backups = 10
