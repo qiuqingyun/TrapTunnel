@@ -333,6 +333,14 @@ snmpv1_agent_addr_override = true
 6. export 订阅
 7. SIGHUP 热重载
 
+当前实现语义：
+
+- 收到 `SIGHUP` 后重新加载 `node.toml`
+- 在同一进程内停止旧 runtime 并启动新 runtime
+- 属于“进程内重启式热重载”，不是零中断的细粒度在线替换
+- `egress.groups` 在 reload 后按新配置生效
+- 旧 TCP ingress 连接会被主动中断，发送端在下一次写入时重连并重发 pending frame
+
 ## 8.2 协议验证
 
 需要确认：
@@ -585,8 +593,8 @@ snmpv1_agent_addr_override = true
 ### 12.7 部署与运行
 
 - [x] 保留旧 `sender` / `receiver` 作为兼容入口
-- [ ] 引入 `SIGHUP` 配置热重载框架
-- [ ] 热重载支持修改 egress group
+- [x] 引入 `SIGHUP` 配置热重载框架
+- [x] 热重载支持修改 egress group
 - [x] 新增 `node` 的 systemd/service 模板
 - [x] 更新构建脚本，支持 `node`
 - [x] 更新安装/卸载/验证脚本
@@ -602,7 +610,7 @@ snmpv1_agent_addr_override = true
 - [x] 验证 fanout + failover
 - [x] 验证 inject 注入
 - [x] 验证 export 订阅
-- [ ] 验证 SIGHUP 热重载
+- [x] 验证 SIGHUP 热重载
 - [x] 验证 `node_id + seq` 在 relay 后保持不变
 - [ ] 验证 `inManage` 对 SNMPv1 Trap 的设备识别正确
 - [ ] 验证旧 HMS 在过渡期仍可工作

@@ -143,6 +143,11 @@ func captureLoop(ctx context.Context, cfg config.NodeConfig, out chan<- frame.Fr
 	}
 	defer packetConn.Close()
 
+	go func() {
+		<-ctx.Done()
+		_ = packetConn.Close()
+	}()
+
 	rawConn, err := ipv4.NewRawConn(packetConn)
 	if err != nil {
 		return fmt.Errorf("capture raw conn failed: %w", err)
@@ -462,6 +467,11 @@ func ingressLoop(ctx context.Context, cfg config.NodeConfig, handler func(frame.
 func handleIngressConn(ctx context.Context, cfg config.NodeConfig, conn net.Conn, handler func(frame.Frame, string) error) {
 	defer conn.Close()
 
+	go func() {
+		<-ctx.Done()
+		closeConnNow(conn)
+	}()
+
 	tmp := make([]byte, cfg.Tuning.IngressReadBufferSize)
 	decoder := frame.NewDecoder()
 	decoder.MaxTotalLength = uint32(cfg.Tuning.MaxFrameTotalLength)
@@ -610,6 +620,13 @@ func signalContext() (context.Context, context.CancelFunc) {
 		cancel()
 	}()
 	return ctx, cancel
+}
+
+func closeConnNow(conn net.Conn) {
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		_ = tcpConn.SetLinger(0)
+	}
+	_ = conn.Close()
 }
 
 func nextReconnectDelay(cfg config.NodeConfig, base time.Duration) time.Duration {

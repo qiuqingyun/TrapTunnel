@@ -31,3 +31,4 @@ Thumbs.db
 build/receiver/
 build/sender/
 .tmp/
+build/
