@@ -22,6 +22,14 @@ type Frame struct {
 	Payload  []byte
 }
 
+// Clone returns an independent copy suitable for fanout delivery.
+func (f Frame) Clone() Frame {
+	payload := make([]byte, len(f.Payload))
+	copy(payload, f.Payload)
+	f.Payload = payload
+	return f
+}
+
 // TotalLength returns the body size written after the initial 4-byte length prefix.
 func (f Frame) TotalLength() uint32 {
 	return uint32(MetaSize + len(f.Payload))

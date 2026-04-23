@@ -95,7 +95,6 @@
 - 将内部发送对象从 `PacketData` 升级为 `frame`
 - ingress 接收到的 frame 可直接进入 egress
 - 每个 fanout group 独立连接、独立缓冲、独立重连
-- 热重载支持修改 egress group
 
 交付结果：
 
@@ -357,6 +356,8 @@ listen = "0.0.0.0:12000"
   - 从 `ns-device` 发送测试 UDP 包
 - `examples/node-edge.toml`
   - `profile = "edge"`
+- `examples/node-relay.toml`
+  - `profile = "relay"`
 - `examples/node-sink.toml`
   - `profile = "sink"`
 - 一个简单的 UDP 监听工具或脚本
@@ -500,14 +501,13 @@ listen = "0.0.0.0:12000"
 
 ### 12.3 Relay 与多上游转发
 
-- [ ] 将内部发送对象从 `PacketData` 升级为统一 `frame`
-- [ ] ingress 接收到的 `frame` 可直接进入 egress
-- [ ] 支持 `profile = relay`
-- [ ] 支持 `[[egress.groups]]` 配置结构
-- [ ] 实现组内 failover
-- [ ] 实现组间 fanout
-- [ ] 每个 group 拥有独立连接和缓冲
-- [ ] 热重载支持修改 egress group
+- [x] 将内部发送对象从 `PacketData` 升级为统一 `frame`
+- [x] ingress 接收到的 `frame` 可直接进入 egress
+- [x] 支持 `profile = relay`
+- [x] 支持 `[[egress.groups]]` 配置结构
+- [x] 实现组内 failover
+- [x] 实现组间 fanout
+- [x] 每个 group 拥有独立连接和缓冲
 
 ### 12.4 Inject 修正
 
@@ -542,10 +542,12 @@ listen = "0.0.0.0:12000"
 ### 12.7 部署与运行
 
 - [ ] 保留旧 `sender` / `receiver` 作为兼容入口
+- [ ] 引入 `SIGHUP` 配置热重载框架
+- [ ] 热重载支持修改 egress group
 - [ ] 新增 `node` 的 systemd/service 模板
 - [ ] 更新构建脚本，支持 `node`
 - [ ] 更新安装/卸载/验证脚本
-- [ ] 补充 `edge / relay / sink` 示例配置
+- [x] 补充 `edge / relay / sink` 示例配置
 - [ ] 补充 `A-F` 和 `G/H` 的部署示例
 - [ ] 明确旧 `sender` / `receiver` 的下线条件和回滚窗口
 
@@ -553,12 +555,12 @@ listen = "0.0.0.0:12000"
 
 - [x] 验证本地采集
 - [x] 验证 ingress 接收
-- [ ] 验证 relay 转发
-- [ ] 验证 fanout + failover
+- [x] 验证 relay 转发
+- [x] 验证 fanout + failover
 - [x] 验证 inject 注入
 - [ ] 验证 export 订阅
 - [ ] 验证 SIGHUP 热重载
-- [ ] 验证 `node_id + seq` 在 relay 后保持不变
+- [x] 验证 `node_id + seq` 在 relay 后保持不变
 - [ ] 验证 `inManage` 对 SNMPv1 Trap 的设备识别正确
 - [ ] 验证旧 HMS 在过渡期仍可工作
 

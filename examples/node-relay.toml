@@ -1,0 +1,27 @@
+[node]
+id = 101
+name = "relay-node"
+profile = "relay"
+
+[capture]
+enabled = true
+listen_ports = [162]
+
+[ingress]
+enabled = true
+listen = "0.0.0.0:11000"
+
+[egress]
+enabled = true
+reconnect_interval = 5
+
+[[egress.groups]]
+members = ["10.20.0.10:10000", "10.20.0.11:10000"]
+
+[[egress.groups]]
+members = ["10.30.0.10:10000"]
+
+[logging]
+level = "INFO"
+max_log_size = 10
+max_log_backups = 100

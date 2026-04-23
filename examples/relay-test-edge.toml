@@ -1,0 +1,18 @@
+[node]
+id = 201
+name = "EDGE-RELAY-TEST"
+profile = "edge"
+
+[capture]
+listen_ports = [162]
+
+[egress]
+reconnect_interval = 2
+
+[[egress.groups]]
+members = ["10.20.2.2:11000"]
+
+[logging]
+level = "DEBUG"
+max_log_size = 10
+max_log_backups = 10

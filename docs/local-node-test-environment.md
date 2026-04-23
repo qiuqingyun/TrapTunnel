@@ -2,9 +2,12 @@
 
 本文档说明如何在单台 Linux 主机上，使用 Linux network namespace 构建一套可重复创建、可重复销毁的 `node` 本地测试环境。
 
-该环境用于验证最小闭环：
+该环境用于验证两类链路：
 
-`ns-device -> ns-edge(node edge) -> ns-sink(node sink) -> UDP 162 listener`
+- 最小闭环：
+  - `ns-device -> ns-edge(node edge) -> ns-sink(node sink) -> UDP 162 listener`
+- relay / fanout / failover：
+  - `ns-device -> ns-edge(node edge) -> ns-relay(node relay) -> ns-sink-a / ns-sink-b`
 
 ## 1. 目标
 
@@ -52,11 +55,24 @@
 - [scripts/dev/send-snmptrap-v1.sh](/home/qqy/TrapTunnel/scripts/dev/send-snmptrap-v1.sh)
 - [scripts/dev/run-edge-tcpdump.sh](/home/qqy/TrapTunnel/scripts/dev/run-edge-tcpdump.sh)
 - [scripts/dev/run-sink-tcpdump.sh](/home/qqy/TrapTunnel/scripts/dev/run-sink-tcpdump.sh)
+- [scripts/dev/setup-relay-netns.sh](/home/qqy/TrapTunnel/scripts/dev/setup-relay-netns.sh)
+- [scripts/dev/cleanup-relay-netns.sh](/home/qqy/TrapTunnel/scripts/dev/cleanup-relay-netns.sh)
+- [scripts/dev/run-relay-edge.sh](/home/qqy/TrapTunnel/scripts/dev/run-relay-edge.sh)
+- [scripts/dev/run-relay-node.sh](/home/qqy/TrapTunnel/scripts/dev/run-relay-node.sh)
+- [scripts/dev/run-relay-sink-a.sh](/home/qqy/TrapTunnel/scripts/dev/run-relay-sink-a.sh)
+- [scripts/dev/run-relay-sink-b.sh](/home/qqy/TrapTunnel/scripts/dev/run-relay-sink-b.sh)
+- [scripts/dev/run-relay-listener.sh](/home/qqy/TrapTunnel/scripts/dev/run-relay-listener.sh)
+- [scripts/dev/send-relay-udp.sh](/home/qqy/TrapTunnel/scripts/dev/send-relay-udp.sh)
 
 示例配置：
 
 - [examples/node-edge.toml](/home/qqy/TrapTunnel/examples/node-edge.toml)
+- [examples/node-relay.toml](/home/qqy/TrapTunnel/examples/node-relay.toml)
 - [examples/node-sink.toml](/home/qqy/TrapTunnel/examples/node-sink.toml)
+- [examples/relay-test-edge.toml](/home/qqy/TrapTunnel/examples/relay-test-edge.toml)
+- [examples/relay-test-relay.toml](/home/qqy/TrapTunnel/examples/relay-test-relay.toml)
+- [examples/relay-test-sink-a.toml](/home/qqy/TrapTunnel/examples/relay-test-sink-a.toml)
+- [examples/relay-test-sink-b.toml](/home/qqy/TrapTunnel/examples/relay-test-sink-b.toml)
 
 辅助工具：
 
@@ -228,16 +244,91 @@ done
 - `edge -> sink -> inject`
 - 普通 UDP payload
 
+已通过 Go 单元测试验证：
+
+- relay 收到的 `frame` 可直接进入 egress
+- `[[egress.groups]]` 的组间 fanout
+- group 内 failover
+- relay 后 `node_id + seq` 保持不变
+
+已通过本地 `netns` 实测验证：
+
+- `edge -> relay -> sink-a / sink-b` 可实际跑通
+- relay 的 fanout 可同时送达两个 sink
+- relay 的 failover 可在首成员连接失败时切到备成员
+- sink 侧收到的 `node_id + seq` 与 edge 发出的值保持一致
+
 暂不以该环境直接验证：
 
 - SNMPv1 `agent-addr` 修正
-- relay
-- fanout
 - export
 
-这些能力应在后续阶段逐步加入测试样例。
+这些能力应在后续阶段继续补充到测试样例。
 
-## 10. 可直接使用的开源工具
+## 10. relay / fanout / failover 实测
+
+推荐拓扑：
+
+- `ns-device`
+  - 发送 UDP Trap
+- `ns-edge`
+  - 运行 `node edge`
+- `ns-relay`
+  - 运行 `node relay`
+- `ns-sink-a`
+  - 运行 `node sink`
+  - 运行 UDP 监听器
+- `ns-sink-b`
+  - 运行 `node sink`
+  - 运行 UDP 监听器
+
+测试命令顺序：
+
+```bash
+./scripts/dev/build-dev-binaries.sh
+./scripts/dev/setup-relay-netns.sh
+./scripts/dev/run-relay-listener.sh ns-sink-a
+./scripts/dev/run-relay-listener.sh ns-sink-b
+./scripts/dev/run-relay-sink-a.sh
+./scripts/dev/run-relay-sink-b.sh
+./scripts/dev/run-relay-node.sh
+./scripts/dev/run-relay-edge.sh
+./scripts/dev/send-relay-udp.sh 10.20.1.1 162 relay-stage3-test
+```
+
+默认语义：
+
+- `relay-test-edge.toml`
+  - `edge` 抓 `10.20.1.1:162`
+  - 上送到 `10.20.2.2:11000`
+- `relay-test-relay.toml`
+  - `relay` 监听 `10.20.2.2:11000`
+  - `group 0 = ["10.20.3.2:10001", "10.20.3.2:10000"]`
+    - 用错误端口触发 failover
+  - `group 1 = ["10.20.4.2:10000"]`
+    - 用于验证 fanout
+
+成功判定：
+
+- `node edge` 日志出现：
+  - `PacketCaptured`
+  - `TrapSent`
+- `node relay` 日志出现：
+  - `RelayEnqueue`
+  - `FanoutDispatch`
+  - 对 `10.20.3.2:10001` 的 `ConnFailed`
+  - 对 `10.20.3.2:10000` 和 `10.20.4.2:10000` 的 `ConnEstablished`
+- `node sink-a` / `node sink-b` 日志都出现：
+  - `TrapReceived`
+- 两个 UDP listener 都收到同一条 payload
+
+清理命令：
+
+```bash
+./scripts/dev/cleanup-relay-netns.sh
+```
+
+## 11. 可直接使用的开源工具
 
 除了当前仓库自带脚本，也可以直接使用一些常见开源工具：
 

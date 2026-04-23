@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
 	"os/signal"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -20,15 +22,19 @@ import (
 	"traptunnel/internal/frame"
 )
 
-// Run starts a minimal node runtime for the supported profiles.
+const groupBufferSize = 1024
+
+// Run starts the node runtime for the supported profiles.
 func Run(ctx context.Context, cfg config.NodeConfig) error {
 	switch cfg.Profile {
 	case config.ProfileEdge:
 		return runEdge(ctx, cfg)
+	case config.ProfileRelay:
+		return runRelay(ctx, cfg)
 	case config.ProfileSink:
 		return runSink(ctx, cfg)
 	default:
-		return fmt.Errorf("profile %q is not supported in minimal node runtime", cfg.Profile)
+		return fmt.Errorf("profile %q is not supported in current node runtime", cfg.Profile)
 	}
 }
 
@@ -42,10 +48,8 @@ func runEdge(ctx context.Context, cfg config.NodeConfig) error {
 	if len(cfg.Capture.ListenPorts) == 0 {
 		return errors.New("edge profile requires at least one capture.listen_ports entry")
 	}
-
-	targets := flattenTargets(cfg.Egress.Groups)
-	if len(targets) == 0 {
-		return errors.New("edge profile requires at least one egress target")
+	if len(cfg.Egress.Groups) == 0 {
+		return errors.New("edge profile requires at least one egress group")
 	}
 
 	frames := make(chan frame.Frame, 1024)
@@ -55,7 +59,56 @@ func runEdge(ctx context.Context, cfg config.NodeConfig) error {
 		errCh <- captureLoop(ctx, cfg, frames)
 	}()
 	go func() {
-		errCh <- egressLoop(ctx, cfg, targets, frames)
+		errCh <- fanoutLoop(ctx, cfg, frames)
+	}()
+
+	select {
+	case <-ctx.Done():
+		return nil
+	case err := <-errCh:
+		return err
+	}
+}
+
+func runRelay(ctx context.Context, cfg config.NodeConfig) error {
+	if !cfg.Capture.Enabled {
+		return errors.New("relay profile requires capture.enabled=true")
+	}
+	if !cfg.Ingress.Enabled {
+		return errors.New("relay profile requires ingress.enabled=true")
+	}
+	if !cfg.Egress.Enabled {
+		return errors.New("relay profile requires egress.enabled=true")
+	}
+	if len(cfg.Capture.ListenPorts) == 0 {
+		return errors.New("relay profile requires at least one capture.listen_ports entry")
+	}
+	if cfg.Ingress.Listen == "" {
+		return errors.New("relay profile requires ingress.listen")
+	}
+	if len(cfg.Egress.Groups) == 0 {
+		return errors.New("relay profile requires at least one egress group")
+	}
+
+	frames := make(chan frame.Frame, 1024)
+	errCh := make(chan error, 3)
+
+	go func() {
+		errCh <- captureLoop(ctx, cfg, frames)
+	}()
+	go func() {
+		errCh <- ingressLoop(ctx, cfg, func(incoming frame.Frame, connID string) error {
+			select {
+			case frames <- incoming:
+				slog.Debug("Relay 转发收到的帧", "component", "node", "profile", cfg.Profile, "event", "RelayEnqueue", "conn_id", connID, "node_id", incoming.NodeID, "seq", incoming.Sequence)
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		})
+	}()
+	go func() {
+		errCh <- fanoutLoop(ctx, cfg, frames)
 	}()
 
 	select {
@@ -118,14 +171,14 @@ func captureLoop(ctx context.Context, cfg config.NodeConfig, out chan<- frame.Fr
 		fullPacket = append(fullPacket, payload...)
 		sequence := atomic.AddUint32(&seq, 1)
 
-		frame := frame.Frame{
+		outgoing := frame.Frame{
 			NodeID:   cfg.ID,
 			Sequence: sequence,
 			Payload:  fullPacket,
 		}
 
 		select {
-		case out <- frame:
+		case out <- outgoing:
 			slog.Debug("捕获到 Trap 包", "component", "node", "profile", cfg.Profile, "event", "PacketCaptured", "seq", sequence, "src_ip", header.Src.String(), "dst_ip", header.Dst.String(), "dst_port", dstPort)
 		case <-ctx.Done():
 			return nil
@@ -133,14 +186,81 @@ func captureLoop(ctx context.Context, cfg config.NodeConfig, out chan<- frame.Fr
 	}
 }
 
-func egressLoop(ctx context.Context, cfg config.NodeConfig, targets []string, in <-chan frame.Frame) error {
+func fanoutLoop(ctx context.Context, cfg config.NodeConfig, in <-chan frame.Frame) error {
+	if len(cfg.Egress.Groups) == 0 {
+		return errors.New("fanout requires at least one egress group")
+	}
+
+	groupInputs := make([]chan frame.Frame, len(cfg.Egress.Groups))
+	errCh := make(chan error, len(cfg.Egress.Groups))
+	var wg sync.WaitGroup
+
+	for idx, group := range cfg.Egress.Groups {
+		groupInput := make(chan frame.Frame, groupBufferSize)
+		groupInputs[idx] = groupInput
+		wg.Add(1)
+		go func(groupIndex int, members []string, input <-chan frame.Frame) {
+			defer wg.Done()
+			errCh <- egressGroupLoop(ctx, cfg, groupIndex, members, input)
+		}(idx, append([]string(nil), group.Members...), groupInput)
+	}
+
+	go func() {
+		<-ctx.Done()
+		for _, groupInput := range groupInputs {
+			close(groupInput)
+		}
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			wg.Wait()
+			return nil
+		case err := <-errCh:
+			if err != nil && !errors.Is(err, context.Canceled) {
+				return err
+			}
+		case incoming, ok := <-in:
+			if !ok {
+				wg.Wait()
+				return nil
+			}
+			for groupIndex, groupInput := range groupInputs {
+				outgoing := incoming.Clone()
+				select {
+				case groupInput <- outgoing:
+				case <-ctx.Done():
+					wg.Wait()
+					return nil
+				}
+				slog.Debug("帧加入 fanout group", "component", "node", "profile", cfg.Profile, "event", "FanoutDispatch", "group", groupIndex, "node_id", incoming.NodeID, "seq", incoming.Sequence)
+			}
+		}
+	}
+}
+
+func egressGroupLoop(ctx context.Context, cfg config.NodeConfig, groupIndex int, members []string, in <-chan frame.Frame) error {
 	reconnectInterval := time.Duration(cfg.Egress.ReconnectInterval) * time.Second
 	if reconnectInterval <= 0 {
 		reconnectInterval = 5 * time.Second
 	}
 
+	var pending *frame.Frame
 	for {
-		conn, target := dialTargets(ctx, targets)
+		if pending == nil {
+			select {
+			case <-ctx.Done():
+				return nil
+			case next, ok := <-in:
+				if !ok {
+					return nil
+				}
+				pending = &next
+			}
+		}
+
+		conn, target := dialTargets(ctx, members)
 		if conn == nil {
 			select {
 			case <-ctx.Done():
@@ -150,27 +270,47 @@ func egressLoop(ctx context.Context, cfg config.NodeConfig, targets []string, in
 			}
 		}
 
-		slog.Info("连接成功", "component", "node", "profile", cfg.Profile, "event", "ConnEstablished", "target", target)
+		slog.Info("egress group 已连接", "component", "node", "profile", cfg.Profile, "event", "ConnEstablished", "group", groupIndex, "target", target)
+
+		for pending != nil {
+			if err := writeFrame(conn, *pending); err != nil {
+				slog.Error("egress group 发送错误", "component", "node", "profile", cfg.Profile, "event", "SendError", "group", groupIndex, "target", target, "error", err, "seq", pending.Sequence)
+				_ = conn.Close()
+				time.Sleep(reconnectInterval)
+				goto reconnect
+			}
+			slog.Debug("Trap 已发送", "component", "node", "profile", cfg.Profile, "event", "TrapSent", "group", groupIndex, "target", target, "seq", pending.Sequence, "size", pending.TotalLength())
+			pending = nil
+		}
 
 		for {
 			select {
 			case <-ctx.Done():
 				_ = conn.Close()
 				return nil
-			case incoming := <-in:
-				_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-				if err := incoming.WriteTo(conn); err != nil {
-					slog.Error("发送错误", "component", "node", "profile", cfg.Profile, "event", "SendError", "target", target, "error", err, "seq", incoming.Sequence)
+			case next, ok := <-in:
+				if !ok {
+					_ = conn.Close()
+					return nil
+				}
+				if err := writeFrame(conn, next); err != nil {
+					slog.Error("egress group 发送错误", "component", "node", "profile", cfg.Profile, "event", "SendError", "group", groupIndex, "target", target, "error", err, "seq", next.Sequence)
+					pending = &next
 					_ = conn.Close()
 					time.Sleep(reconnectInterval)
 					goto reconnect
 				}
-				slog.Debug("Trap 已发送", "component", "node", "profile", cfg.Profile, "event", "TrapSent", "target", target, "seq", incoming.Sequence, "size", incoming.TotalLength())
+				slog.Debug("Trap 已发送", "component", "node", "profile", cfg.Profile, "event", "TrapSent", "group", groupIndex, "target", target, "seq", next.Sequence, "size", next.TotalLength())
 			}
 		}
 
 	reconnect:
 	}
+}
+
+func writeFrame(conn net.Conn, outgoing frame.Frame) error {
+	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	return outgoing.WriteTo(conn)
 }
 
 func dialTargets(ctx context.Context, targets []string) (net.Conn, string) {
@@ -213,6 +353,19 @@ func runSink(ctx context.Context, cfg config.NodeConfig) error {
 		return fmt.Errorf("inject raw conn failed: %w", err)
 	}
 
+	slog.Info("Node 启动", "component", "node", "profile", cfg.Profile, "event", "Startup", "listen", cfg.Ingress.Listen, "inject_ip", cfg.Inject.IP)
+
+	return ingressLoop(ctx, cfg, func(incoming frame.Frame, connID string) error {
+		slog.Debug("收到 Trap", "component", "node", "profile", cfg.Profile, "event", "TrapReceived", "conn_id", connID, "node_id", incoming.NodeID, "seq", incoming.Sequence, "size", incoming.TotalLength())
+		if err := patchAndInject(incoming.Payload, cfg, rawConn); err != nil {
+			slog.Error("注入失败", "component", "node", "profile", cfg.Profile, "event", "InjectFailed", "conn_id", connID, "node_id", incoming.NodeID, "seq", incoming.Sequence, "error", err)
+			return nil
+		}
+		return nil
+	})
+}
+
+func ingressLoop(ctx context.Context, cfg config.NodeConfig, handler func(frame.Frame, string) error) error {
 	listener, err := net.Listen("tcp", cfg.Ingress.Listen)
 	if err != nil {
 		return fmt.Errorf("ingress listen failed: %w", err)
@@ -226,25 +379,20 @@ func runSink(ctx context.Context, cfg config.NodeConfig) error {
 		}()
 	}
 
-	slog.Info("Node 启动", "component", "node", "profile", cfg.Profile, "event", "Startup", "listen", cfg.Ingress.Listen, "inject_ip", cfg.Inject.IP)
-
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			if errors.Is(err, net.ErrClosed) {
+			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
 				return nil
 			}
 			slog.Error("TCP 接收失败", "component", "node", "profile", cfg.Profile, "event", "AcceptError", "error", err)
 			continue
 		}
-		go handleSinkConn(ctx, cfg, conn, rawConn)
+		go handleIngressConn(ctx, cfg, conn, handler)
 	}
 }
 
-func handleSinkConn(ctx context.Context, cfg config.NodeConfig, conn net.Conn, rawConn *ipv4.RawConn) {
+func handleIngressConn(ctx context.Context, cfg config.NodeConfig, conn net.Conn, handler func(frame.Frame, string) error) {
 	defer conn.Close()
 
 	tmp := make([]byte, 8192)
@@ -262,6 +410,9 @@ func handleSinkConn(ctx context.Context, cfg config.NodeConfig, conn net.Conn, r
 
 		n, err := conn.Read(tmp)
 		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				slog.Error("TCP 读取失败", "component", "node", "profile", cfg.Profile, "event", "ReadError", "error", err, "conn_id", connID)
+			}
 			break
 		}
 
@@ -272,9 +423,12 @@ func handleSinkConn(ctx context.Context, cfg config.NodeConfig, conn net.Conn, r
 		}
 
 		for _, incoming := range frames {
-			slog.Debug("收到 Trap", "component", "node", "profile", cfg.Profile, "event", "TrapReceived", "conn_id", connID, "node_id", incoming.NodeID, "seq", incoming.Sequence, "size", incoming.TotalLength())
-			if err := patchAndInject(incoming.Payload, cfg, rawConn); err != nil {
-				slog.Error("注入失败", "component", "node", "profile", cfg.Profile, "event", "InjectFailed", "conn_id", connID, "node_id", incoming.NodeID, "seq", incoming.Sequence, "error", err)
+			if err := handler(incoming, connID); err != nil {
+				if errors.Is(err, context.Canceled) {
+					return
+				}
+				slog.Error("处理隧道帧失败", "component", "node", "profile", cfg.Profile, "event", "HandleFrameError", "error", err, "conn_id", connID, "node_id", incoming.NodeID, "seq", incoming.Sequence)
+				return
 			}
 		}
 	}
@@ -323,14 +477,6 @@ func patchAndInject(raw []byte, cfg config.NodeConfig, rawConn *ipv4.RawConn) er
 	return rawConn.WriteTo(header, buffer.Bytes(), nil)
 }
 
-func flattenTargets(groups []config.EgressGroup) []string {
-	targets := make([]string, 0)
-	for _, group := range groups {
-		targets = append(targets, group.Members...)
-	}
-	return targets
-}
-
 func udpPort(b []byte) uint16 {
 	if len(b) < 2 {
 		return 0
@@ -353,7 +499,7 @@ func Main(cfg config.NodeConfig) int {
 func signalContext() (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(context.Background())
 	ch := make(chan os.Signal, 1)
-	// SIGINT and SIGTERM are enough for the minimal runtime.
+	// SIGINT and SIGTERM are enough for the current runtime.
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-ch

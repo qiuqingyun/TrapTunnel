@@ -1,0 +1,24 @@
+[node]
+id = 202
+name = "RELAY-TEST"
+profile = "relay"
+
+[capture]
+listen_ports = [162]
+
+[ingress]
+listen = "10.20.2.2:11000"
+
+[egress]
+reconnect_interval = 2
+
+[[egress.groups]]
+members = ["10.20.3.2:10001", "10.20.3.2:10000"]
+
+[[egress.groups]]
+members = ["10.20.4.2:10000"]
+
+[logging]
+level = "DEBUG"
+max_log_size = 10
+max_log_backups = 10
