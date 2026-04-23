@@ -231,11 +231,12 @@ listen = "0.0.0.0:12000"
 
 ### 6.3 配置兼容策略
 
-建议提供以下过渡能力：
+采用破坏性切换策略：
 
-- `node` 能兼容读取旧版 `sender.conf`
-- `node` 能兼容读取旧版 `receiver.conf`
-- 或提供配置转换脚本，将旧配置转换为 `node.toml`
+- `node` 只接受统一的 `node.toml`
+- 不保留 `sender.conf` / `receiver.conf` 的兼容读取
+- 不提供旧配置自动转换工具
+- 现网切换时按角色模板手工改写为 `node.toml`
 
 ## 7. 部署方案
 
@@ -531,13 +532,11 @@ listen = "0.0.0.0:12000"
 
 ### 12.6 配置与兼容
 
-- [ ] 统一配置格式切换为 `node.toml`
+- [x] 统一配置格式切换为 `node.toml`
 - [x] 配置结构支持 `capture / ingress / egress / inject / export`
 - [x] 增加配置合法性校验
 - [x] 增加 `inject.port` 与 `capture.listen_ports` 冲突校验
-- [ ] 兼容读取旧版 `sender` 配置
-- [ ] 兼容读取旧版 `receiver` 配置
-- [ ] 或提供旧配置到 `node.toml` 的转换工具
+- [ ] 现网 `sender.conf` / `receiver.conf` 已完成手工迁移到 `node.toml`
 
 ### 12.7 部署与运行
 
