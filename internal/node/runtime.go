@@ -357,9 +357,13 @@ func runSink(ctx context.Context, cfg config.NodeConfig) error {
 
 	return ingressLoop(ctx, cfg, func(incoming frame.Frame, connID string) error {
 		slog.Debug("收到 Trap", "component", "node", "profile", cfg.Profile, "event", "TrapReceived", "conn_id", connID, "node_id", incoming.NodeID, "seq", incoming.Sequence, "size", incoming.TotalLength())
-		if err := patchAndInject(incoming.Payload, cfg, rawConn); err != nil {
+		rewrite, err := patchAndInject(incoming.Payload, cfg, rawConn)
+		if err != nil {
 			slog.Error("注入失败", "component", "node", "profile", cfg.Profile, "event", "InjectFailed", "conn_id", connID, "node_id", incoming.NodeID, "seq", incoming.Sequence, "error", err)
 			return nil
+		}
+		if rewrite.SourceOverridden {
+			slog.Debug("按 SNMPv1 agent-addr 修正源 IP", "component", "node", "profile", cfg.Profile, "event", "InjectSourceOverride", "conn_id", connID, "node_id", incoming.NodeID, "seq", incoming.Sequence, "original_src_ip", rewrite.OriginalSrcIP, "effective_src_ip", rewrite.EffectiveSrcIP)
 		}
 		return nil
 	})
@@ -436,25 +440,60 @@ func handleIngressConn(ctx context.Context, cfg config.NodeConfig, conn net.Conn
 	slog.Info("客户端断开连接", "component", "node", "profile", cfg.Profile, "event", "ClientClosed", "client_ip", connID)
 }
 
-func patchAndInject(raw []byte, cfg config.NodeConfig, rawConn *ipv4.RawConn) error {
+type injectRewrite struct {
+	OriginalSrcIP    string
+	EffectiveSrcIP   string
+	SourceOverridden bool
+}
+
+func patchAndInject(raw []byte, cfg config.NodeConfig, rawConn *ipv4.RawConn) (injectRewrite, error) {
+	header, payload, rewrite, err := prepareInjectedPacket(raw, cfg)
+	if err != nil {
+		return injectRewrite{}, err
+	}
+	if err := rawConn.WriteTo(header, payload, nil); err != nil {
+		return injectRewrite{}, err
+	}
+	return rewrite, nil
+}
+
+func prepareInjectedPacket(raw []byte, cfg config.NodeConfig) (*ipv4.Header, []byte, injectRewrite, error) {
 	packet := gopacket.NewPacket(raw, layers.LayerTypeIPv4, gopacket.Default)
 
 	ipLayer := packet.Layer(layers.LayerTypeIPv4)
 	if ipLayer == nil {
-		return errors.New("missing ipv4 layer")
+		return nil, nil, injectRewrite{}, errors.New("missing ipv4 layer")
 	}
 	ip, _ := ipLayer.(*layers.IPv4)
 
 	udpLayer := packet.Layer(layers.LayerTypeUDP)
 	if udpLayer == nil {
-		return errors.New("missing udp layer")
+		return nil, nil, injectRewrite{}, errors.New("missing udp layer")
 	}
 	udp, _ := udpLayer.(*layers.UDP)
 
 	newDstIP := net.ParseIP(cfg.Inject.IP)
 	if newDstIP == nil {
-		return fmt.Errorf("invalid inject ip: %s", cfg.Inject.IP)
+		return nil, nil, injectRewrite{}, fmt.Errorf("invalid inject ip: %s", cfg.Inject.IP)
 	}
+
+	rewrite := injectRewrite{
+		OriginalSrcIP:  ip.SrcIP.String(),
+		EffectiveSrcIP: ip.SrcIP.String(),
+	}
+
+	if cfg.Inject.SNMPv1AgentAddrOverride {
+		agentAddr, found, err := extractSNMPv1AgentAddr(udp.Payload)
+		if err != nil {
+			return nil, nil, injectRewrite{}, fmt.Errorf("extract snmpv1 agent-addr: %w", err)
+		}
+		if found && agentAddr.To4() != nil && !agentAddr.Equal(ip.SrcIP.To4()) {
+			ip.SrcIP = agentAddr.To4()
+			rewrite.EffectiveSrcIP = ip.SrcIP.String()
+			rewrite.SourceOverridden = true
+		}
+	}
+
 	ip.DstIP = newDstIP
 	udp.DstPort = layers.UDPPort(cfg.Inject.Port)
 	udp.SetNetworkLayerForChecksum(ip)
@@ -465,16 +504,17 @@ func patchAndInject(raw []byte, cfg config.NodeConfig, rawConn *ipv4.RawConn) er
 		FixLengths:       true,
 	}
 	if err := gopacket.SerializeLayers(buffer, options, udp, gopacket.Payload(udp.Payload)); err != nil {
-		return err
+		return nil, nil, injectRewrite{}, err
 	}
 
 	header, err := ipv4.ParseHeader(raw)
 	if err != nil {
-		return err
+		return nil, nil, injectRewrite{}, err
 	}
+	header.Src = ip.SrcIP
 	header.Dst = newDstIP
 	header.Checksum = 0
-	return rawConn.WriteTo(header, buffer.Bytes(), nil)
+	return header, buffer.Bytes(), rewrite, nil
 }
 
 func udpPort(b []byte) uint16 {

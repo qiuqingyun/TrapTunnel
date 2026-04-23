@@ -1,0 +1,16 @@
+[node]
+name = "SINK-AGENT-ADDR-TEST"
+profile = "sink"
+
+[ingress]
+listen = "10.10.2.2:10000"
+
+[inject]
+ip = "127.0.0.1"
+port = 162
+snmpv1_agent_addr_override = true
+
+[logging]
+level = "DEBUG"
+max_log_size = 10
+max_log_backups = 10

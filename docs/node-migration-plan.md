@@ -511,13 +511,13 @@ listen = "0.0.0.0:12000"
 
 ### 12.4 Inject 修正
 
-- [ ] 在 `inject` 路径解析 UDP payload
-- [ ] 识别 SNMPv1 Trap-PDU
-- [ ] 提取 `agent-addr`
-- [ ] 仅在 inject 副本中覆盖源 IP
-- [ ] 重新计算 IPv4 校验和
-- [ ] 重新计算 UDP 校验和
-- [ ] 确认主链路 `frame` 不被污染
+- [x] 在 `inject` 路径解析 UDP payload
+- [x] 识别 SNMPv1 Trap-PDU
+- [x] 提取 `agent-addr`
+- [x] 仅在 inject 副本中覆盖源 IP
+- [x] 重新计算 IPv4 校验和
+- [x] 重新计算 UDP 校验和
+- [x] 确认主链路 `frame` 不被污染
 - [ ] 验证 `G/H -> inManage` 识别结果正确
 
 ### 12.5 Export

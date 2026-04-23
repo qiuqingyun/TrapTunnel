@@ -67,6 +67,7 @@
 示例配置：
 
 - [examples/node-edge.toml](/home/qqy/TrapTunnel/examples/node-edge.toml)
+- [examples/node-sink-agent-addr.toml](/home/qqy/TrapTunnel/examples/node-sink-agent-addr.toml)
 - [examples/node-relay.toml](/home/qqy/TrapTunnel/examples/node-relay.toml)
 - [examples/node-sink.toml](/home/qqy/TrapTunnel/examples/node-sink.toml)
 - [examples/relay-test-edge.toml](/home/qqy/TrapTunnel/examples/relay-test-edge.toml)
@@ -257,10 +258,11 @@ done
 - relay 的 fanout 可同时送达两个 sink
 - relay 的 failover 可在首成员连接失败时切到备成员
 - sink 侧收到的 `node_id + seq` 与 edge 发出的值保持一致
+- `SNMPv1 agent-addr` 修正可在 `inject` 路径生效
+- 当 `agent-addr` 与外层 UDP 源 IP 不一致时，sink 侧监听器看到的是修正后的源 IP
 
 暂不以该环境直接验证：
 
-- SNMPv1 `agent-addr` 修正
 - export
 
 这些能力应在后续阶段继续补充到测试样例。
@@ -328,7 +330,43 @@ done
 ./scripts/dev/cleanup-relay-netns.sh
 ```
 
-## 11. 可直接使用的开源工具
+## 11. SNMPv1 agent-addr 修正实测
+
+测试命令顺序：
+
+```bash
+./scripts/dev/build-dev-binaries.sh
+./scripts/dev/setup-netns.sh
+./scripts/dev/run-sink-listener.sh
+./scripts/dev/run-sink.sh ./examples/node-sink-agent-addr.toml
+./scripts/dev/run-edge.sh
+./scripts/dev/send-snmptrap-v1.sh 10.10.1.1 162 public 10.200.30.40
+```
+
+成功判定：
+
+- `node edge` 日志出现：
+  - `PacketCaptured`
+  - `TrapSent`
+- `node sink` 日志出现：
+  - `TrapReceived`
+  - `InjectSourceOverride`
+- UDP listener 最终收到的源 IP 为 `10.200.30.40`
+- 而不是设备侧 namespace 的外层源 IP `10.10.1.2`
+
+该用例用于证明：
+
+- 仅 `inject` 副本执行源 IP 修正
+- 修正来源于 SNMPv1 Trap 内的 `agent-addr`
+- 修正后的副本已能被本地 UDP 应用正常接收
+
+清理命令：
+
+```bash
+./scripts/dev/cleanup-netns.sh
+```
+
+## 12. 可直接使用的开源工具
 
 除了当前仓库自带脚本，也可以直接使用一些常见开源工具：
 
