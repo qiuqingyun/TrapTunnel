@@ -28,6 +28,7 @@ func TestFanoutLoopFailoverAndFanout(t *testing.T) {
 			},
 		},
 	}
+	config.ApplyNodeDefaults(&cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -87,6 +88,7 @@ func TestRelayIngressFramePassesToEgress(t *testing.T) {
 			},
 		},
 	}
+	config.ApplyNodeDefaults(&cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

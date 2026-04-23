@@ -19,7 +19,9 @@ fi
 printf "[build-dev-binaries] using %s\n" "$GO_BIN"
 "$GO_BIN" build -o "$BIN_DIR/node" "$ROOT_DIR/cmd/node"
 "$GO_BIN" build -o "$BIN_DIR/udp-listener" "$ROOT_DIR/cmd/udp-listener"
+"$GO_BIN" build -o "$BIN_DIR/export-client" "$ROOT_DIR/cmd/export-client"
 
 printf "[build-dev-binaries] built:\n"
 printf "  %s\n" "$BIN_DIR/node"
 printf "  %s\n" "$BIN_DIR/udp-listener"
+printf "  %s\n" "$BIN_DIR/export-client"

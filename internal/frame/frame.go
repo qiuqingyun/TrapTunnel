@@ -37,10 +37,14 @@ func (f Frame) TotalLength() uint32 {
 
 // MarshalBinary serializes the frame into the legacy wire format.
 func (f Frame) MarshalBinary() ([]byte, error) {
-	if len(f.Payload)+MetaSize > DefaultMaxTotalLength {
+	return f.MarshalBinaryWithLimit(DefaultMaxTotalLength)
+}
+
+// MarshalBinaryWithLimit serializes the frame using the provided size guard.
+func (f Frame) MarshalBinaryWithLimit(maxTotalLength uint32) ([]byte, error) {
+	if maxTotalLength > 0 && uint32(len(f.Payload)+MetaSize) > maxTotalLength {
 		return nil, fmt.Errorf("frame too large: %d", len(f.Payload)+MetaSize)
 	}
-
 	buf := make([]byte, HeaderSize+len(f.Payload))
 	binary.BigEndian.PutUint32(buf[0:4], f.TotalLength())
 	binary.BigEndian.PutUint16(buf[4:6], f.NodeID)
@@ -52,6 +56,16 @@ func (f Frame) MarshalBinary() ([]byte, error) {
 // WriteTo serializes and writes the frame to the provided writer.
 func (f Frame) WriteTo(w io.Writer) error {
 	wire, err := f.MarshalBinary()
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(wire)
+	return err
+}
+
+// WriteToWithLimit serializes and writes the frame to the provided writer using a custom size guard.
+func (f Frame) WriteToWithLimit(w io.Writer, maxTotalLength uint32) error {
+	wire, err := f.MarshalBinaryWithLimit(maxTotalLength)
 	if err != nil {
 		return err
 	}

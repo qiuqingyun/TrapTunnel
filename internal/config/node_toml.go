@@ -13,6 +13,7 @@ type nodeFile struct {
 	Egress  EgressConfig  `toml:"egress"`
 	Inject  InjectConfig  `toml:"inject"`
 	Export  ExportConfig  `toml:"export"`
+	Tuning  TuningConfig  `toml:"tuning"`
 	Logging LoggingConfig `toml:"logging"`
 }
 
@@ -42,6 +43,7 @@ func LoadNode(path string) (NodeConfig, error) {
 		Egress:  file.Egress,
 		Inject:  file.Inject,
 		Export:  file.Export,
+		Tuning:  file.Tuning,
 		Logging: file.Logging,
 	}
 

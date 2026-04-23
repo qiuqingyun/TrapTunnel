@@ -24,6 +24,7 @@ type NodeConfig struct {
 	Egress  EgressConfig  `toml:"egress"`
 	Inject  InjectConfig  `toml:"inject"`
 	Export  ExportConfig  `toml:"export"`
+	Tuning  TuningConfig  `toml:"tuning"`
 	Logging LoggingConfig `toml:"logging"`
 }
 
@@ -55,10 +56,26 @@ type InjectConfig struct {
 }
 
 type ExportConfig struct {
-	Enabled    bool   `toml:"enabled"`
-	Listen     string `toml:"listen"`
-	Format     string `toml:"format"`
-	MaxClients int    `toml:"max_clients"`
+	Enabled          bool   `toml:"enabled"`
+	Listen           string `toml:"listen"`
+	Format           string `toml:"format"`
+	MaxClients       int    `toml:"max_clients"`
+	SlowClientPolicy string `toml:"slow_client_policy"`
+}
+
+type TuningConfig struct {
+	PipelineBufferSize     int `toml:"pipeline_buffer_size"`
+	CaptureReadBufferSize  int `toml:"capture_read_buffer_size"`
+	CaptureReadBackoffMS   int `toml:"capture_read_backoff_ms"`
+	IngressReadBufferSize  int `toml:"ingress_read_buffer_size"`
+	MaxFrameTotalLength    int `toml:"max_frame_total_length"`
+	EgressGroupBufferSize  int `toml:"egress_group_buffer_size"`
+	EgressDialTimeoutMS    int `toml:"egress_dial_timeout_ms"`
+	EgressWriteTimeoutMS   int `toml:"egress_write_timeout_ms"`
+	EgressBackoffMaxMS     int `toml:"egress_backoff_max_ms"`
+	EgressBackoffJitterPct int `toml:"egress_backoff_jitter_pct"`
+	ExportClientBufferSize int `toml:"export_client_buffer_size"`
+	ExportWriteTimeoutMS   int `toml:"export_write_timeout_ms"`
 }
 
 type LoggingConfig struct {
@@ -68,6 +85,21 @@ type LoggingConfig struct {
 }
 
 func (p Profile) Capabilities() []string {
+	switch p {
+	case ProfileEdge:
+		return []string{"capture", "egress", "export"}
+	case ProfileRelay:
+		return []string{"capture", "ingress", "egress", "export"}
+	case ProfileSink:
+		return []string{"ingress", "inject", "export"}
+	case ProfileFull:
+		return []string{"capture", "ingress", "egress", "inject", "export"}
+	default:
+		return nil
+	}
+}
+
+func (p Profile) RequiredCapabilities() []string {
 	switch p {
 	case ProfileEdge:
 		return []string{"capture", "egress"}
@@ -146,6 +178,45 @@ func ApplyNodeDefaults(cfg *NodeConfig) {
 		if cfg.Export.MaxClients <= 0 {
 			cfg.Export.MaxClients = 32
 		}
+		if cfg.Export.SlowClientPolicy == "" {
+			cfg.Export.SlowClientPolicy = "disconnect"
+		}
+	}
+	if cfg.Tuning.PipelineBufferSize <= 0 {
+		cfg.Tuning.PipelineBufferSize = 1024
+	}
+	if cfg.Tuning.CaptureReadBufferSize <= 0 {
+		cfg.Tuning.CaptureReadBufferSize = 2048
+	}
+	if cfg.Tuning.CaptureReadBackoffMS <= 0 {
+		cfg.Tuning.CaptureReadBackoffMS = 100
+	}
+	if cfg.Tuning.IngressReadBufferSize <= 0 {
+		cfg.Tuning.IngressReadBufferSize = 8192
+	}
+	if cfg.Tuning.MaxFrameTotalLength <= 0 {
+		cfg.Tuning.MaxFrameTotalLength = 10 * 1024 * 1024
+	}
+	if cfg.Tuning.EgressGroupBufferSize <= 0 {
+		cfg.Tuning.EgressGroupBufferSize = 1024
+	}
+	if cfg.Tuning.EgressDialTimeoutMS <= 0 {
+		cfg.Tuning.EgressDialTimeoutMS = 5000
+	}
+	if cfg.Tuning.EgressWriteTimeoutMS <= 0 {
+		cfg.Tuning.EgressWriteTimeoutMS = 5000
+	}
+	if cfg.Tuning.EgressBackoffMaxMS <= 0 {
+		cfg.Tuning.EgressBackoffMaxMS = 30000
+	}
+	if cfg.Tuning.EgressBackoffJitterPct <= 0 {
+		cfg.Tuning.EgressBackoffJitterPct = 20
+	}
+	if cfg.Tuning.ExportClientBufferSize <= 0 {
+		cfg.Tuning.ExportClientBufferSize = 1024
+	}
+	if cfg.Tuning.ExportWriteTimeoutMS <= 0 {
+		cfg.Tuning.ExportWriteTimeoutMS = 5000
 	}
 	if cfg.Logging.Level == "" {
 		cfg.Logging.Level = "INFO"
@@ -244,6 +315,11 @@ func ValidateNode(cfg NodeConfig) error {
 		if cfg.Export.MaxClients <= 0 {
 			return fmt.Errorf("export.max_clients must be greater than 0")
 		}
+		switch cfg.Export.SlowClientPolicy {
+		case "disconnect", "drop_oldest", "drop_newest":
+		default:
+			return fmt.Errorf("export.slow_client_policy must be one of disconnect, drop_oldest, drop_newest, got %q", cfg.Export.SlowClientPolicy)
+		}
 	}
 
 	if cfg.Inject.Enabled && cfg.Capture.Enabled {
@@ -253,12 +329,48 @@ func ValidateNode(cfg NodeConfig) error {
 			}
 		}
 	}
+	if err := validatePositive("tuning.pipeline_buffer_size", cfg.Tuning.PipelineBufferSize); err != nil {
+		return err
+	}
+	if err := validatePositive("tuning.capture_read_buffer_size", cfg.Tuning.CaptureReadBufferSize); err != nil {
+		return err
+	}
+	if err := validatePositive("tuning.capture_read_backoff_ms", cfg.Tuning.CaptureReadBackoffMS); err != nil {
+		return err
+	}
+	if err := validatePositive("tuning.ingress_read_buffer_size", cfg.Tuning.IngressReadBufferSize); err != nil {
+		return err
+	}
+	if err := validatePositive("tuning.max_frame_total_length", cfg.Tuning.MaxFrameTotalLength); err != nil {
+		return err
+	}
+	if err := validatePositive("tuning.egress_group_buffer_size", cfg.Tuning.EgressGroupBufferSize); err != nil {
+		return err
+	}
+	if err := validatePositive("tuning.egress_dial_timeout_ms", cfg.Tuning.EgressDialTimeoutMS); err != nil {
+		return err
+	}
+	if err := validatePositive("tuning.egress_write_timeout_ms", cfg.Tuning.EgressWriteTimeoutMS); err != nil {
+		return err
+	}
+	if err := validatePositive("tuning.egress_backoff_max_ms", cfg.Tuning.EgressBackoffMaxMS); err != nil {
+		return err
+	}
+	if cfg.Tuning.EgressBackoffJitterPct <= 0 || cfg.Tuning.EgressBackoffJitterPct > 100 {
+		return fmt.Errorf("tuning.egress_backoff_jitter_pct must be between 1 and 100, got %d", cfg.Tuning.EgressBackoffJitterPct)
+	}
+	if err := validatePositive("tuning.export_client_buffer_size", cfg.Tuning.ExportClientBufferSize); err != nil {
+		return err
+	}
+	if err := validatePositive("tuning.export_write_timeout_ms", cfg.Tuning.ExportWriteTimeoutMS); err != nil {
+		return err
+	}
 	return nil
 }
 
 func validateCapability(profile Profile, capability string, enabled bool) error {
 	if !enabled {
-		if profile.Supports(capability) {
+		if slices.Contains(profile.RequiredCapabilities(), capability) {
 			return fmt.Errorf("profile %q requires %s.enabled", profile, capability)
 		}
 		return nil
@@ -272,6 +384,13 @@ func validateCapability(profile Profile, capability string, enabled bool) error 
 func validatePort(field string, port int) error {
 	if port <= 0 || port > 65535 {
 		return fmt.Errorf("%s must be between 1 and 65535, got %d", field, port)
+	}
+	return nil
+}
+
+func validatePositive(field string, value int) error {
+	if value <= 0 {
+		return fmt.Errorf("%s must be greater than 0, got %d", field, value)
 	}
 	return nil
 }

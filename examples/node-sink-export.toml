@@ -1,0 +1,26 @@
+[node]
+name = "SINK-EXPORT-TEST"
+profile = "sink"
+
+[ingress]
+listen = "10.10.2.2:10000"
+
+[inject]
+ip = "127.0.0.1"
+port = 162
+
+[export]
+enabled = true
+listen = "10.10.2.2:12000"
+format = "frame"
+max_clients = 8
+slow_client_policy = "disconnect"
+
+[tuning]
+export_client_buffer_size = 1024
+max_frame_total_length = 10485760
+
+[logging]
+level = "DEBUG"
+max_log_size = 10
+max_log_backups = 10

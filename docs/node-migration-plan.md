@@ -522,12 +522,12 @@ listen = "0.0.0.0:12000"
 
 ### 12.5 Export
 
-- [ ] 增加 export listener
-- [ ] 定义 export 首版输出协议
-- [ ] 支持多个 export 客户端订阅
-- [ ] 每个客户端独立缓冲
-- [ ] 慢客户端不会拖垮主链路
-- [ ] 验证新程序可稳定消费 export 流
+- [x] 增加 export listener
+- [x] 定义 export 首版输出协议
+- [x] 支持多个 export 客户端订阅
+- [x] 每个客户端独立缓冲
+- [x] 慢客户端不会拖垮主链路
+- [x] 验证新程序可稳定消费 export 流
 
 ### 12.6 配置与兼容
 
@@ -558,7 +558,7 @@ listen = "0.0.0.0:12000"
 - [x] 验证 relay 转发
 - [x] 验证 fanout + failover
 - [x] 验证 inject 注入
-- [ ] 验证 export 订阅
+- [x] 验证 export 订阅
 - [ ] 验证 SIGHUP 热重载
 - [x] 验证 `node_id + seq` 在 relay 后保持不变
 - [ ] 验证 `inManage` 对 SNMPv1 Trap 的设备识别正确
