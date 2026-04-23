@@ -38,7 +38,7 @@ COMPONENT="all"
 CLEAN=false
 
 usage() {
-  printf "Usage: %s [--component=all|receiver|sender] [--clean]\n" "$0"
+  printf "Usage: %s [--component=all|node|receiver|sender] [--clean]\n" "$0"
 }
 
 for arg in "$@"; do
@@ -60,7 +60,7 @@ for arg in "$@"; do
 done
 
 case "$COMPONENT" in
-  all|receiver|sender) ;;
+  all|node|receiver|sender) ;;
   *) fail "invalid component: $COMPONENT" ;;
 esac
 
@@ -70,6 +70,8 @@ check_deps() {
   if ! command -v go >/dev/null 2>&1; then
     if command -v go.exe >/dev/null 2>&1; then
       GO_CMD="go.exe"
+    elif [[ -x "$HOME/.local/go/bin/go" ]]; then
+      GO_CMD="$HOME/.local/go/bin/go"
     elif [[ -x "/mnt/c/Program Files/Go/bin/go.exe" ]]; then
       GO_CMD="/mnt/c/Program Files/Go/bin/go.exe"
     else
@@ -129,13 +131,20 @@ needs_build() {
   local component="$1"
   local arch="$2"
   local output="$BUILD_DIR/$component/${component}-linux-${arch}"
+  local source_dir="$ROOT_DIR/$component"
+  if [[ "$component" == "node" ]]; then
+    source_dir="$ROOT_DIR/cmd/node"
+  fi
   if [[ ! -f "$output" ]]; then
     return 0
   fi
   if [[ "$ROOT_DIR/go.mod" -nt "$output" || "$ROOT_DIR/go.sum" -nt "$output" ]]; then
     return 0
   fi
-  if find "$ROOT_DIR/$component" -type f -newer "$output" -print -quit | grep -q .; then
+  if find "$ROOT_DIR/internal" -type f -newer "$output" -print -quit | grep -q .; then
+    return 0
+  fi
+  if find "$source_dir" -type f -newer "$output" -print -quit | grep -q .; then
     return 0
   fi
   return 1
@@ -149,7 +158,11 @@ build_component_arch() {
   mkdir -p "$output_dir"
   if needs_build "$component" "$arch"; then
     log_info "building $component linux/$arch"
-    (cd "$ROOT_DIR" && GOOS=linux GOARCH="$arch" CGO_ENABLED=0 "$GO_CMD" build -o "build/$component/${component}-linux-${arch}" "./$component")
+    local build_target="./$component"
+    if [[ "$component" == "node" ]]; then
+      build_target="./cmd/node"
+    fi
+    (cd "$ROOT_DIR" && GOOS=linux GOARCH="$arch" CGO_ENABLED=0 "$GO_CMD" build -o "build/$component/${component}-linux-${arch}" "$build_target")
     validate_binary_arch "$output" "$arch"
   else
     log_info "skip build $component linux/$arch (no changes)"
@@ -187,16 +200,24 @@ package_component_combined() {
   chmod +x "$pkg_dir/${component}-amd64" "$pkg_dir/${component}-arm64"
 
   # 复制并处理配置文件
-  if [[ -f "$TEMPLATE_DIR/${component}.conf" ]]; then
-    cp "$TEMPLATE_DIR/${component}.conf" "$pkg_dir/${component}.conf"
+  local config_template="${component}.conf"
+  local config_file="${component}.conf"
+  if [[ "$component" == "node" ]]; then
+    config_template="node.toml"
+    config_file="node.toml"
+  fi
+
+  if [[ -f "$TEMPLATE_DIR/${config_template}" ]]; then
+    cp "$TEMPLATE_DIR/${config_template}" "$pkg_dir/${config_file}"
   else
-    log_warn "template not found: $TEMPLATE_DIR/${component}.conf"
+    log_warn "template not found: $TEMPLATE_DIR/${config_template}"
   fi
 
   # 复制并处理服务文件
   if [[ -f "$TEMPLATE_DIR/traptunnel.service" ]]; then
     cp "$TEMPLATE_DIR/traptunnel.service" "$pkg_dir/traptunnel-${component}.service"
     sed -i "s/{{COMPONENT_NAME}}/$component/g" "$pkg_dir/traptunnel-${component}.service"
+    sed -i "s/{{CONFIG_FILE}}/$config_file/g" "$pkg_dir/traptunnel-${component}.service"
   else
     log_warn "template not found: $TEMPLATE_DIR/traptunnel.service"
   fi
@@ -213,6 +234,7 @@ package_component_combined() {
     if [[ -f "$TEMPLATE_DIR/$script" ]]; then
       cp "$TEMPLATE_DIR/$script" "$pkg_dir/$script"
       sed -i "s/{{COMPONENT_NAME}}/$component/g" "$pkg_dir/$script"
+      sed -i "s/{{CONFIG_FILE}}/$config_file/g" "$pkg_dir/$script"
       chmod +x "$pkg_dir/$script"
     else
       log_warn "template not found: $TEMPLATE_DIR/$script"
@@ -225,13 +247,13 @@ package_component_combined() {
 }
 
 clean_build() {
-  rm -rf "$BUILD_DIR/receiver" "$BUILD_DIR/sender" "$BUILD_DIR/.staging"
+  rm -rf "$BUILD_DIR/node" "$BUILD_DIR/receiver" "$BUILD_DIR/sender" "$BUILD_DIR/.staging"
   log_info "build directory cleaned"
 }
 
 main() {
   check_deps
-  mkdir -p "$BUILD_DIR/receiver" "$BUILD_DIR/sender"
+  mkdir -p "$BUILD_DIR/node" "$BUILD_DIR/receiver" "$BUILD_DIR/sender"
   # 确保模板目录存在
   if [[ ! -d "$TEMPLATE_DIR" ]]; then
     fail "Template directory not found: $TEMPLATE_DIR"
@@ -243,7 +265,7 @@ main() {
 
   local components=()
   if [[ "$COMPONENT" == "all" ]]; then
-    components=("receiver" "sender")
+    components=("node" "receiver" "sender")
   else
     components=("$COMPONENT")
   fi

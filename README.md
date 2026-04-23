@@ -247,11 +247,17 @@ Export 重连原则：
 # 初始化模块（首次）
 go mod tidy
 
+# 构建 Node
+go build -o node ./cmd/node
+
 # 构建 Sender
 go build -o sender ./sender
 
 # 构建 Receiver
 go build -o receiver ./receiver
+
+# 打包 Node 部署产物
+bash build/scripts/build.sh --component=node
 ```
 
 配套脚本位于：

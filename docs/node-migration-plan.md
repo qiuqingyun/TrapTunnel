@@ -252,11 +252,55 @@ listen = "0.0.0.0:12000"
 - 三组 VIP 继续保持不变
 - 设备入口方式不需要改
 
+最小示例：
+
+```toml
+[node]
+id = 101
+name = "edge-a"
+profile = "edge"
+
+[capture]
+listen_ports = [162]
+
+[egress]
+reconnect_interval = 5
+
+[[egress.groups]]
+members = ["10.10.10.10:10000", "10.10.10.11:10000"]
+```
+
 ### 7.2 中心侧 G-H
 
 建议角色：
 
 - `G/H` 使用 `profile = sink`
+
+最小示例：
+
+```toml
+[node]
+name = "sink-g"
+profile = "sink"
+
+[ingress]
+listen = "0.0.0.0:10000"
+
+[inject]
+ip = "127.0.0.1"
+port = 162
+snmpv1_agent_addr_override = true
+```
+
+### 7.3 部署说明
+
+- `A-F` 统一使用 `node.toml`
+- `G/H` 统一使用 `node.toml`
+- 若使用 systemd，推荐部署目录：
+  - `/opt/traptunnel/node`
+- 推荐服务名：
+  - `traptunnel-node`
+- 若同机需要多实例，应改成独立安装目录和独立 service 名，而不是复用同一个 `node.toml`
 
 说明：
 
@@ -540,14 +584,14 @@ listen = "0.0.0.0:12000"
 
 ### 12.7 部署与运行
 
-- [ ] 保留旧 `sender` / `receiver` 作为兼容入口
+- [x] 保留旧 `sender` / `receiver` 作为兼容入口
 - [ ] 引入 `SIGHUP` 配置热重载框架
 - [ ] 热重载支持修改 egress group
-- [ ] 新增 `node` 的 systemd/service 模板
-- [ ] 更新构建脚本，支持 `node`
-- [ ] 更新安装/卸载/验证脚本
+- [x] 新增 `node` 的 systemd/service 模板
+- [x] 更新构建脚本，支持 `node`
+- [x] 更新安装/卸载/验证脚本
 - [x] 补充 `edge / relay / sink` 示例配置
-- [ ] 补充 `A-F` 和 `G/H` 的部署示例
+- [x] 补充 `A-F` 和 `G/H` 的部署示例
 - [ ] 明确旧 `sender` / `receiver` 的下线条件和回滚窗口
 
 ### 12.8 测试与验证

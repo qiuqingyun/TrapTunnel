@@ -1,0 +1,18 @@
+[node]
+id = 101
+name = "node-example"
+profile = "edge"
+
+[capture]
+listen_ports = [162]
+
+[egress]
+reconnect_interval = 5
+
+[[egress.groups]]
+members = ["127.0.0.1:10000"]
+
+[logging]
+level = "INFO"
+max_log_size = 10
+max_log_backups = 100

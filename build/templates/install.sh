@@ -5,6 +5,7 @@ COMPONENT="{{COMPONENT_NAME}}"
 SERVICE_NAME="traptunnel-${COMPONENT}"
 SERVICE_TEMPLATE="traptunnel-${COMPONENT}.service"
 DEFAULT_INSTALL_DIR="/opt/traptunnel/${COMPONENT}"
+CONFIG_FILE="{{CONFIG_FILE}}"
 if [ -n "${SUDO_USER:-}" ]; then
   DEFAULT_USER="$SUDO_USER"
 else
@@ -117,15 +118,11 @@ validate_binary_arch "$BINARY_SRC" "$EXPECTED_MACHINE"
 log "检测到架构 $ARCH，使用二进制文件: $BINARY_SRC"
 cp "$BINARY_SRC" "$INSTALL_DIR/${COMPONENT}"
 chmod 755 "$INSTALL_DIR/${COMPONENT}"
-# 确保二进制文件所有权正确
-if [[ "$SERVICE_USER" != "root" ]]; then
-    chown "$SERVICE_USER:$SERVICE_GROUP" "$INSTALL_DIR/${COMPONENT}"
-fi
 
-if [[ ! -f "$INSTALL_DIR/${COMPONENT}.conf" ]]; then
-  cp "./${COMPONENT}.conf" "$INSTALL_DIR/${COMPONENT}.conf"
+if [[ ! -f "$INSTALL_DIR/${CONFIG_FILE}" ]]; then
+  cp "./${CONFIG_FILE}" "$INSTALL_DIR/${CONFIG_FILE}"
 else
-  log "保留现有配置文件 $INSTALL_DIR/${COMPONENT}.conf"
+  log "保留现有配置文件 $INSTALL_DIR/${CONFIG_FILE}"
 fi
 
 cp "$INSTALL_DIR/${COMPONENT}" "/usr/local/bin/${COMPONENT}"
@@ -150,6 +147,7 @@ chmod 755 "$LOG_DIR"
 sed -e "s#{{INSTALL_DIR}}#${INSTALL_DIR}#g" \
     -e "s#{{SERVICE_USER}}#${SERVICE_USER}#g" \
     -e "s#{{SERVICE_GROUP}}#${SERVICE_GROUP}#g" \
+    -e "s#{{CONFIG_FILE}}#${CONFIG_FILE}#g" \
     "./${SERVICE_TEMPLATE}" > "$service_path"
 
 if [[ "$SERVICE_USER" != "root" ]]; then
