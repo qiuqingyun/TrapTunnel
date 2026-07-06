@@ -31,6 +31,7 @@ BUILD_DIR="$ROOT_DIR/build"
 TEMPLATE_DIR="$BUILD_DIR/templates"
 OUTPUT_DIR="$BUILD_DIR/releases"
 COMPONENT="node"
+EXECUTABLE_NAME="traptunnel-${COMPONENT}"
 
 usage() {
   printf "Usage: %s [--clean]\n" "$0"
@@ -159,12 +160,14 @@ render_templates() {
   cp "$TEMPLATE_DIR/node.toml" "$pkg_dir/node.toml"
   cp "$TEMPLATE_DIR/traptunnel.service" "$pkg_dir/traptunnel-node.service"
   sed -i "s/{{COMPONENT_NAME}}/${COMPONENT}/g" "$pkg_dir/traptunnel-node.service"
+  sed -i "s/{{EXECUTABLE_NAME}}/${EXECUTABLE_NAME}/g" "$pkg_dir/traptunnel-node.service"
   sed -i "s/{{CONFIG_FILE}}/node.toml/g" "$pkg_dir/traptunnel-node.service"
 
   local scripts=("deploy.sh" "install.sh" "start.sh" "stop.sh" "restart.sh" "rollback.sh" "verify.sh" "uninstall.sh")
   for script in "${scripts[@]}"; do
     cp "$TEMPLATE_DIR/$script" "$pkg_dir/$script"
     sed -i "s/{{COMPONENT_NAME}}/${COMPONENT}/g" "$pkg_dir/$script"
+    sed -i "s/{{EXECUTABLE_NAME}}/${EXECUTABLE_NAME}/g" "$pkg_dir/$script"
     sed -i "s/{{CONFIG_FILE}}/node.toml/g" "$pkg_dir/$script"
     chmod +x "$pkg_dir/$script"
   done
@@ -173,6 +176,7 @@ render_templates() {
   for doc in "${docs[@]}"; do
     cp "$TEMPLATE_DIR/$doc" "$pkg_dir/$doc"
     sed -i "s/{{COMPONENT_NAME}}/${COMPONENT}/g" "$pkg_dir/$doc"
+    sed -i "s/{{EXECUTABLE_NAME}}/${EXECUTABLE_NAME}/g" "$pkg_dir/$doc"
   done
 }
 

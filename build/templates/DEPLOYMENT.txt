@@ -16,6 +16,9 @@ TrapTunnel {{COMPONENT_NAME}} 生产部署指引
 7. legacy-configs/
    旧版 sender.conf / receiver.conf 样例，方便对照迁移。
 
+说明：
+运行时命令会安装为 {{EXECUTABLE_NAME}}，不会占用系统里的 node / sender / receiver 命令名。
+
 二、上线前准备
 1. 目标环境需为 Linux + systemd。
 2. 需要 root 权限执行部署。
@@ -37,8 +40,9 @@ TrapTunnel {{COMPONENT_NAME}} 生产部署指引
 1. 自动识别 CPU 架构并选择 {{COMPONENT_NAME}}-amd64 或 {{COMPONENT_NAME}}-arm64。
 2. 自动备份旧安装目录到 /opt/traptunnel/{{COMPONENT_NAME}}.bak-时间戳。
 3. 自动备份旧 systemd service 文件到 /etc/systemd/system/traptunnel-{{COMPONENT_NAME}}.service.bak-时间戳。
-4. 升级时自动保留旧配置文件；首次部署则写入当前包内的默认 node.toml。
-5. 自动执行 systemctl daemon-reload、enable、restart。
+4. 升级旧版 node 包时，若能确认 /usr/local/bin/node 是旧 TrapTunnel 二进制，会自动清理它，避免影响 Node.js。
+5. 升级时自动保留旧配置文件；首次部署则写入当前包内的默认 node.toml。
+6. 自动执行 systemctl daemon-reload、enable、restart。
 
 六、部署后验证
 1. 执行：

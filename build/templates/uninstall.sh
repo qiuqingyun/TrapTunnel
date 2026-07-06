@@ -4,6 +4,7 @@ set -euo pipefail
 COMPONENT="{{COMPONENT_NAME}}"
 SERVICE_NAME="traptunnel-${COMPONENT}"
 DEFAULT_INSTALL_DIR="/opt/traptunnel/${COMPONENT}"
+BINARY_NAME="{{EXECUTABLE_NAME}}"
 
 log_time() { date +"%Y-%m-%d %H:%M:%S"; }
 log() { printf "[%s] %s\n" "$(log_time)" "$*"; }
@@ -45,7 +46,7 @@ rm -f "${service_path}.bak-current"
 
 systemctl daemon-reload
 
-rm -f "/usr/local/bin/${COMPONENT}"
+rm -f "/usr/local/bin/${BINARY_NAME}"
 rm -rf "$INSTALL_DIR"
 rm -f "${INSTALL_DIR}.bak-current"
 

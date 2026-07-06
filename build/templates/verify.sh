@@ -5,6 +5,7 @@ COMPONENT="{{COMPONENT_NAME}}"
 SERVICE_NAME="traptunnel-${COMPONENT}"
 DEFAULT_INSTALL_DIR="/opt/traptunnel/${COMPONENT}"
 CONFIG_FILE="{{CONFIG_FILE}}"
+BINARY_NAME="{{EXECUTABLE_NAME}}"
 
 log_time() { date +"%Y-%m-%d %H:%M:%S"; }
 log() { printf "[%s] %s\n" "$(log_time)" "$*"; }
@@ -30,10 +31,10 @@ if [[ ! -f "$CONF" ]]; then
 fi
 log "配置文件存在: $CONF"
 
-if [[ ! -x "$INSTALL_DIR/${COMPONENT}" ]]; then
-  fail "未找到可执行文件: $INSTALL_DIR/${COMPONENT}"
+if [[ ! -x "$INSTALL_DIR/${BINARY_NAME}" ]]; then
+  fail "未找到可执行文件: $INSTALL_DIR/${BINARY_NAME}"
 fi
-log "二进制存在: $INSTALL_DIR/${COMPONENT}"
+log "二进制存在: $INSTALL_DIR/${BINARY_NAME}"
 
 check_tcp_port() {
   local port="$1"

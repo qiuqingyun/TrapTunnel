@@ -6,6 +6,7 @@ SERVICE_NAME="traptunnel-${COMPONENT}"
 SERVICE_TEMPLATE="traptunnel-${COMPONENT}.service"
 DEFAULT_INSTALL_DIR="/opt/traptunnel/${COMPONENT}"
 CONFIG_FILE="{{CONFIG_FILE}}"
+BINARY_NAME="{{EXECUTABLE_NAME}}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 default_service_user() {
@@ -87,7 +88,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
   fail "需要 root 权限执行部署"
 fi
 
-for cmd in systemctl mkdir cp mv sed id ln dd od tr uname install chown chmod readlink; do
+for cmd in systemctl mkdir cp mv sed id ln dd od tr uname install chown chmod readlink cmp rm; do
   command -v "$cmd" >/dev/null 2>&1 || fail "缺少依赖命令: $cmd"
 done
 
@@ -119,10 +120,18 @@ if [[ -f "$service_path" ]]; then
   log "已备份旧 service 文件到 $service_backup"
 fi
 
+legacy_path="/usr/local/bin/${COMPONENT}"
+if [[ -n "$backup_dir" && -f "$legacy_path" && -f "$backup_dir/${COMPONENT}" ]]; then
+  if cmp -s "$legacy_path" "$backup_dir/${COMPONENT}"; then
+    rm -f "$legacy_path"
+    log "已清理旧命令: $legacy_path"
+  fi
+fi
+
 mkdir -p "$INSTALL_DIR"
 mkdir -p "$INSTALL_DIR/examples" "$INSTALL_DIR/legacy-configs" "$INSTALL_DIR/reference-docs"
 
-install -m 0755 "$BINARY_SRC" "$INSTALL_DIR/${COMPONENT}"
+install -m 0755 "$BINARY_SRC" "$INSTALL_DIR/${BINARY_NAME}"
 install -m 0755 "$SCRIPT_DIR/${COMPONENT}-amd64" "$INSTALL_DIR/${COMPONENT}-amd64"
 install -m 0755 "$SCRIPT_DIR/${COMPONENT}-arm64" "$INSTALL_DIR/${COMPONENT}-arm64"
 install -m 0755 "$SCRIPT_DIR/start.sh" "$INSTALL_DIR/start.sh"
@@ -155,7 +164,7 @@ else
   log "已写入默认配置模板: $INSTALL_DIR/${CONFIG_FILE}"
 fi
 
-install -m 0755 "$INSTALL_DIR/${COMPONENT}" "/usr/local/bin/${COMPONENT}"
+install -m 0755 "$INSTALL_DIR/${BINARY_NAME}" "/usr/local/bin/${BINARY_NAME}"
 
 SERVICE_GROUP="$(id -gn "$SERVICE_USER")"
 LOG_DIR="/var/log/traptunnel"
@@ -173,7 +182,7 @@ if [[ "$SERVICE_USER" != "root" ]]; then
 fi
 
 if [[ -x "/sbin/restorecon" ]]; then
-  /sbin/restorecon -v "$INSTALL_DIR/${COMPONENT}" "$service_path" || true
+  /sbin/restorecon -v "$INSTALL_DIR/${BINARY_NAME}" "$service_path" || true
 fi
 
 systemctl daemon-reload
@@ -182,5 +191,6 @@ systemctl restart "$SERVICE_NAME"
 
 log "部署完成: ${SERVICE_NAME}"
 log "安装目录: $INSTALL_DIR"
+log "命令路径: /usr/local/bin/${BINARY_NAME}"
 log "配置文件: $INSTALL_DIR/${CONFIG_FILE}"
 log "验证命令: sudo $INSTALL_DIR/verify.sh"

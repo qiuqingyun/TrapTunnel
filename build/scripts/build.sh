@@ -174,6 +174,7 @@ package_component_combined() {
   local output_dir="$BUILD_DIR/$component"
   local bin_amd64="$output_dir/${component}-linux-amd64"
   local bin_arm64="$output_dir/${component}-linux-arm64"
+  local executable_name="traptunnel-${component}"
   
   [[ -f "$bin_amd64" ]] || fail "missing binary: $bin_amd64"
   [[ -f "$bin_arm64" ]] || fail "missing binary: $bin_arm64"
@@ -217,6 +218,7 @@ package_component_combined() {
   if [[ -f "$TEMPLATE_DIR/traptunnel.service" ]]; then
     cp "$TEMPLATE_DIR/traptunnel.service" "$pkg_dir/traptunnel-${component}.service"
     sed -i "s/{{COMPONENT_NAME}}/$component/g" "$pkg_dir/traptunnel-${component}.service"
+    sed -i "s/{{EXECUTABLE_NAME}}/$executable_name/g" "$pkg_dir/traptunnel-${component}.service"
     sed -i "s/{{CONFIG_FILE}}/$config_file/g" "$pkg_dir/traptunnel-${component}.service"
   else
     log_warn "template not found: $TEMPLATE_DIR/traptunnel.service"
@@ -226,6 +228,7 @@ package_component_combined() {
   if [[ -f "$TEMPLATE_DIR/DEPLOYMENT.txt" ]]; then
     cp "$TEMPLATE_DIR/DEPLOYMENT.txt" "$pkg_dir/DEPLOYMENT.txt"
     sed -i "s/{{COMPONENT_NAME}}/$component/g" "$pkg_dir/DEPLOYMENT.txt"
+    sed -i "s/{{EXECUTABLE_NAME}}/$executable_name/g" "$pkg_dir/DEPLOYMENT.txt"
   fi
 
   # 复制并处理脚本
@@ -234,6 +237,7 @@ package_component_combined() {
     if [[ -f "$TEMPLATE_DIR/$script" ]]; then
       cp "$TEMPLATE_DIR/$script" "$pkg_dir/$script"
       sed -i "s/{{COMPONENT_NAME}}/$component/g" "$pkg_dir/$script"
+      sed -i "s/{{EXECUTABLE_NAME}}/$executable_name/g" "$pkg_dir/$script"
       sed -i "s/{{CONFIG_FILE}}/$config_file/g" "$pkg_dir/$script"
       chmod +x "$pkg_dir/$script"
     else
